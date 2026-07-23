@@ -2064,56 +2064,237 @@
         };
 
         // ============================================================
-        // 4. FINANCIAL ENGINE v2.0 (Core)
+        // 4. FINANCIAL ENGINE v3.0 (Refactored - Single Source of Truth)
         // ============================================================
         const FinancialEngine = {
+            // ---- Core Validation ----
+            _hasValidSalary() {
+                const salary = this.getSalary();
+                return salary > 0;
+            },
+
+            _getValidatedSalary() {
+                const salary = this.getSalary();
+                return salary > 0 ? salary : null;
+            },
+
             // ---- Helpers ----
-            getSalary() { return parseFloat(Storage.getSettings().salary) || 0; },
-            getSavingsGoal() { return parseFloat(Storage.getSettings().savingsGoal) || 0; },
-            getExpenses() { return Storage.getExpenses(); },
-            getBudgetItems() { return Storage.getBudgetItems(); },
+            getSalary() {
+                return parseFloat(Storage.getSettings().salary) || 0;
+            },
+
+            getSavingsGoal() {
+                return parseFloat(Storage.getSettings().savingsGoal) || 0;
+            },
+
+            getExpenses() {
+                return Storage.getExpenses();
+            },
+
+            getBudgetItems() {
+                return Storage.getBudgetItems();
+            },
+
             getMonthExpenses() {
                 const range = Utils.getMonthRange();
                 return this.getExpenses().filter(e => e.date >= range.start && e.date <= range.end);
             },
-            getTotal(expenses) { return expenses.reduce((s, e) => s + (parseFloat(e.amount) || 0), 0); },
+
+            getTotal(expenses) {
+                return expenses.reduce((s, e) => s + (parseFloat(e.amount) || 0), 0);
+            },
+
             getCategoryTotal(expenses, category) {
                 return expenses.filter(e => e.category === category).reduce((s, e) => s + (parseFloat(e.amount) || 0), 0);
             },
-            // ---- Core Calculations ----
+
+            // ---- Core Calculations (with validation) ----
+            
+            /**
+             * حساب الأموال المحجوزة من بنود الميزانية
+             * لا تحتاج إلى راتب للعمل
+             */
             calculateReservedMoney() {
                 const items = this.getBudgetItems();
                 return items.filter(item => item.isReserved === true)
                     .reduce((sum, item) => sum + (parseFloat(item.budget) || 0), 0);
             },
+
+            /**
+             * حساب المصروفات المدفوعة في الشهر الحالي
+             * لا تحتاج إلى راتب للعمل
+             */
             calculatePaidExpenses() {
                 return this.getTotal(this.getMonthExpenses());
             },
+
+            /**
+             * ** القاعدة الأولى والرابعة **
+             * حساب الميزانية المتاحة للصرف
+             * إذا لم يوجد راتب -> null
+             * إذا وجد راتب -> الراتب - المحجوز - المصروفات
+             */
             calculateAvailableBudget() {
-                const salary = this.getSalary();
+                const salary = this._getValidatedSalary();
+                if (salary === null) return null;
+                
                 const reserved = this.calculateReservedMoney();
                 const paid = this.calculatePaidExpenses();
                 return salary - reserved - paid;
             },
-            getRemainingDays() {
+
+            /**
+             * ** القاعدة الثانية والخامسة **
+             * حساب عدد الأيام المتبقية حتى نزول الراتب
+             */
+            getRemainingDaysUntilSalary() {
+                const settings = Storage.getSettings();
+                if (!settings.salaryDate) return null;
+                
+                const base = new Date(settings.salaryDate);
+                if (isNaN(base.getTime())) return null;
+                
+                const day = base.getDate();
                 const now = WorldTime.now();
-                const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-                return daysInMonth - now.getDate() + 1;
+                const today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+                
+                let candidate = new Date(now.getFullYear(), now.getMonth(), day);
+                if (candidate < today0) {
+                    candidate = new Date(now.getFullYear(), now.getMonth() + 1, day);
+                }
+                
+                return Math.round((candidate - today0) / 86400000);
             },
-            getDailyBudget() {
+
+            /**
+             * ** القاعدة الخامسة **
+             * حساب ميزانية اليوم
+             * تعتمد على الأيام المتبقية حتى نزول الراتب
+             * وليس أيام الشهر كاملة
+             */
+            calculateDailyBudget() {
                 const available = this.calculateAvailableBudget();
-                const days = this.getRemainingDays();
-                return days > 0 ? available / days : 0;
+                if (available === null) return null;
+                
+                const daysUntilSalary = this.getRemainingDaysUntilSalary();
+                // إذا لم يوجد تاريخ راتب، نستخدم أيام الشهر المتبقية كبديل
+                if (daysUntilSalary === null || daysUntilSalary <= 0) {
+                    // استخدام أيام الشهر المتبقية كبديل آمن
+                    const now = WorldTime.now();
+                    const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+                    const remainingDays = daysInMonth - now.getDate() + 1;
+                    return remainingDays > 0 ? available / remainingDays : 0;
+                }
+                
+                return available / daysUntilSalary;
             },
-            getWeeklyBudget() {
-                const available = this.calculateAvailableBudget();
-                const days = this.getRemainingDays();
-                const weeks = days / 7;
-                return weeks > 0 ? available / weeks : 0;
+
+            /**
+             * ** القاعدة السادسة **
+             * حساب ميزانية الأسبوع
+             * تعتمد على ميزانية اليوم
+             */
+            calculateWeeklyBudget() {
+                const daily = this.calculateDailyBudget();
+                if (daily === null) return null;
+                return daily * 7;
             },
-            getMonthlyBudget() {
+
+            /**
+             * ** القاعدة السابعة **
+             * حساب ميزانية الشهر
+             * تعتمد على الميزانية المتاحة
+             */
+            calculateMonthlyBudget() {
                 return this.calculateAvailableBudget();
             },
+
+            /**
+             * ** القاعدة الثامنة والتاسعة والعاشرة **
+             * تحليل الحالة المالية للمستخدم
+             * يعيد كائن يحتوي على حالة الميزانية ورسائل مناسبة
+             */
+            getFinancialStatus() {
+                const salary = this._getValidatedSalary();
+                const reserved = this.calculateReservedMoney();
+                const paid = this.calculatePaidExpenses();
+                const available = this.calculateAvailableBudget();
+                
+                // القاعدة الثامنة: لم يتم إدخال دخل بعد
+                if (salary === null) {
+                    return {
+                        status: 'no_income',
+                        message: 'أدخل الراتب أولاً',
+                        icon: 'fa-edit',
+                        available: null,
+                        reserved: reserved,
+                        paid: paid,
+                        salary: 0,
+                        details: {
+                            salary: 0,
+                            reserved: reserved,
+                            paid: paid,
+                            difference: null
+                        }
+                    };
+                }
+                
+                // القاعدة التاسعة: الالتزامات أكبر من الراتب
+                if (reserved > salary) {
+                    return {
+                        status: 'commitments_exceed_income',
+                        message: `⚠️ إجمالي الالتزامات (${Utils.formatCurrency(reserved)}) أكبر من الراتب (${Utils.formatCurrency(salary)})`,
+                        icon: 'fa-exclamation-triangle',
+                        available: available,
+                        reserved: reserved,
+                        paid: paid,
+                        salary: salary,
+                        details: {
+                            salary: salary,
+                            reserved: reserved,
+                            paid: paid,
+                            difference: reserved - salary
+                        }
+                    };
+                }
+                
+                // القاعدة العاشرة: تجاوز الميزانية
+                if (available < 0) {
+                    return {
+                        status: 'overspent',
+                        message: `⚠️ لقد تجاوزت ميزانيتك الحالية بمقدار ${Utils.formatCurrency(Math.abs(available))}`,
+                        icon: 'fa-exclamation-circle',
+                        available: available,
+                        reserved: reserved,
+                        paid: paid,
+                        salary: salary,
+                        details: {
+                            salary: salary,
+                            reserved: reserved,
+                            paid: paid,
+                            difference: Math.abs(available)
+                        }
+                    };
+                }
+                
+                // وضع طبيعي
+                return {
+                    status: 'healthy',
+                    message: null,
+                    icon: 'fa-check-circle',
+                    available: available,
+                    reserved: reserved,
+                    paid: paid,
+                    salary: salary,
+                    details: {
+                        salary: salary,
+                        reserved: reserved,
+                        paid: paid,
+                        difference: null
+                    }
+                };
+            },
+
             // ---- Budget Items CRUD ----
             addBudgetItem(data) {
                 const items = this.getBudgetItems();
@@ -2122,7 +2303,7 @@
                     name: data.name || 'بند جديد',
                     category: data.category || 'أخرى',
                     budget: parseFloat(data.budget) || 0,
-                    spent: 0, // will be computed
+                    spent: 0,
                     isReserved: data.isReserved === true,
                     priority: data.priority || 'Medium',
                     icon: data.icon || 'fa-circle',
@@ -2136,6 +2317,7 @@
                 this.refreshAll();
                 return item;
             },
+
             updateBudgetItem(id, data) {
                 let items = this.getBudgetItems();
                 const index = items.findIndex(item => item.id === id);
@@ -2148,12 +2330,14 @@
                 this.refreshAll();
                 return item;
             },
+
             deleteBudgetItem(id) {
                 let items = this.getBudgetItems();
                 items = items.filter(item => item.id !== id);
                 Storage.setBudgetItems(items);
                 this.refreshAll();
             },
+
             // ---- Sync spent amounts ----
             syncBudgetItemsSpent() {
                 const items = this.getBudgetItems();
@@ -2164,7 +2348,18 @@
                 });
                 Storage.setBudgetItems(items);
             },
-            // ---- Refresh all UI and context ----
+
+            // ---- Helper methods for backward compatibility ----
+            getRemainingDays() {
+                const daysUntilSalary = this.getRemainingDaysUntilSalary();
+                if (daysUntilSalary !== null && daysUntilSalary > 0) return daysUntilSalary;
+                // Fallback to remaining days in month
+                const now = WorldTime.now();
+                const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+                return daysInMonth - now.getDate() + 1;
+            },
+
+            // ---- Refresh all ----
             refreshAll() {
                 this.syncBudgetItemsSpent();
                 if (typeof UI !== 'undefined') {
@@ -2172,9 +2367,9 @@
                     UI.renderAll();
                 }
             },
+
             // ---- Reset App (keep Gemini keys) ----
             resetApp() {
-                // حذف جميع بيانات المستخدم
                 const keysToKeep = ['gemini_keys', 'gemini_model', 'gemini_key_index', 'migrated_v2'];
                 const allKeys = Object.keys(localStorage);
                 allKeys.forEach(key => {
@@ -2185,7 +2380,6 @@
                         }
                     }
                 });
-                // إعادة إنشاء البيانات الافتراضية
                 const defaultItems = Utils.defaultCategories().map(cat => {
                     const isReserved = (cat === 'الإيجار' || cat === 'الأقساط');
                     return {
@@ -2210,7 +2404,6 @@
                 Storage.setTravelExpenses([]);
                 Storage.setTempBudget({ totalBudget: 0, categoryBudgets: {} });
                 Storage.setTempExpenses([]);
-                // إزالة أي بيانات قديمة
                 Storage.remove('categoryBudgets');
                 Storage.remove('settings_old');
                 this.refreshAll();
@@ -2223,7 +2416,6 @@
             const settings = Storage.getSettings();
             const oldBudgets = settings.categoryBudgets || {};
             if (Object.keys(oldBudgets).length === 0) {
-                // إنشاء بنود افتراضية
                 const defaultItems = Utils.defaultCategories().map(cat => {
                     const isReserved = (cat === 'الإيجار' || cat === 'الأقساط');
                     return {
@@ -2243,7 +2435,6 @@
                 });
                 Storage.setBudgetItems(defaultItems);
             } else {
-                // تحويل كل فئة إلى بند
                 const items = [];
                 for (const [cat, data] of Object.entries(oldBudgets)) {
                     const budget = typeof data === 'number' ? data : (data.budget || 0);
@@ -2264,19 +2455,16 @@
                     });
                 }
                 Storage.setBudgetItems(items);
-                // حذف القديم من الإعدادات
                 delete settings.categoryBudgets;
                 Storage.setSettings(settings);
             }
             Storage.setMigrated();
-            // مزامنة المصروفات
             FinancialEngine.syncBudgetItemsSpent();
         }
 
         // ============================================================
-        // 5. INCOME, COMMITMENT, INDICATOR, etc. (using new engine)
+        // 5. INCOME, COMMITMENT, INDICATOR, etc.
         // ============================================================
-        // All engines updated to use FinancialEngine methods.
 
         const IncomeAnalysisEngine = {
             analyze(settings) {
@@ -2330,29 +2518,37 @@
             }
         };
 
+        // ============================================================
+        // 6. UPDATED INDICATOR ENGINE (using new FinancialEngine)
+        // ============================================================
         const IndicatorEngine = {
             calculate(income, commitments, expenses, settings) {
                 const available = FinancialEngine.calculateAvailableBudget();
-                const salary = income.totalIncome;
+                const dailyBudget = FinancialEngine.calculateDailyBudget();
+                const weeklyBudget = FinancialEngine.calculateWeeklyBudget();
+                const monthlyBudget = FinancialEngine.calculateMonthlyBudget();
+                const reservedMoney = FinancialEngine.calculateReservedMoney();
+                const paidExpenses = FinancialEngine.calculatePaidExpenses();
+                const financialStatus = FinancialEngine.getFinancialStatus();
+                
+                const salary = income.totalIncome || 0;
                 const daysInMonth = new Date(WorldTime.now().getFullYear(), WorldTime.now().getMonth() + 1, 0).getDate();
-                const remainingDays = daysInMonth - WorldTime.now().getDate() + 1;
-                const dailyBudget = remainingDays > 0 ? available / remainingDays : 0;
-                const weeklyBudget = (remainingDays / 7) > 0 ? available / (remainingDays / 7) : 0;
+                const daysUntilSalary = FinancialEngine.getRemainingDaysUntilSalary();
+                const remainingDays = daysUntilSalary !== null && daysUntilSalary > 0 
+                    ? daysUntilSalary 
+                    : daysInMonth - WorldTime.now().getDate() + 1;
+                
                 const savingsGoal = parseFloat(settings.savingsGoal) || 0;
-
-                const savingsRate = salary > 0 ? (available / salary) * 100 : 0;
+                const savingsRate = salary > 0 ? ((available || 0) / salary) * 100 : 0;
                 const debtRatio = salary > 0 ? (commitments.loans / salary) * 100 : 0;
                 const essentialRatio = salary > 0 ? ((commitments.fixed + commitments.bills) / salary) * 100 : 0;
-                const lifestyleRatio = salary > 0 ? ((commitments.variable + commitments.subscriptions) / salary) * 100 :
-                    0;
+                const lifestyleRatio = salary > 0 ? ((commitments.variable + commitments.subscriptions) / salary) * 100 : 0;
                 const billsRatio = salary > 0 ? (commitments.bills / salary) * 100 : 0;
-                const commitmentRatio = salary > 0 ? ((commitments.fixed + commitments.bills + commitments.loans) / salary) *
-                    100 : 0;
-                const cashFlow = available;
+                const commitmentRatio = salary > 0 ? ((commitments.fixed + commitments.bills + commitments.loans) / salary) * 100 : 0;
+                const cashFlow = available !== null ? available : 0;
                 const flexibility = salary > 0 ? ((salary - commitments.fixed - commitments.bills) / salary) * 100 : 0;
                 const disposable = salary - commitments.fixed - commitments.bills - commitments.variable;
-                const stressIndex = salary > 0 ? ((commitments.fixed + commitments.bills + commitments.loans) / salary) *
-                    100 : 0;
+                const stressIndex = salary > 0 ? ((commitments.fixed + commitments.bills + commitments.loans) / salary) * 100 : 0;
 
                 const catMap = {};
                 expenses.forEach(e => {
@@ -2373,24 +2569,33 @@
                     utilization[item.category] = budget > 0 ? (spent / budget) * 100 : 0;
                 });
 
-                const goalProgress = savingsGoal > 0 ? Math.min(100, (available / savingsGoal) * 100) : 0;
+                const goalProgress = savingsGoal > 0 && available !== null ? Math.min(100, (available / savingsGoal) * 100) : 0;
                 const count = expenses.length;
                 const avgDaily = count > 0 ? total / count : 0;
                 const avgWeekly = avgDaily * 7;
                 const daysPassed = WorldTime.now().getDate();
                 const daysLeft = daysInMonth - daysPassed;
-                const projectedEnd = available - (avgDaily * daysLeft);
+                const projectedEnd = available !== null ? available - (avgDaily * daysLeft) : 0;
 
-                const healthScore = Math.min(100, Math.max(0,
-                    (savingsRate * 0.4) +
-                    (flexibility * 0.3) +
-                    (100 - Math.min(100, stressIndex)) * 0.3
-                ));
+                let healthScore = 0;
+                if (available !== null && salary > 0) {
+                    healthScore = Math.min(100, Math.max(0,
+                        (savingsRate * 0.4) +
+                        (flexibility * 0.3) +
+                        (100 - Math.min(100, stressIndex)) * 0.3
+                    ));
+                }
 
                 let riskLevel = 'منخفض';
                 if (healthScore < 30) riskLevel = 'مرتفع جداً';
                 else if (healthScore < 50) riskLevel = 'مرتفع';
                 else if (healthScore < 70) riskLevel = 'متوسط';
+                else if (healthScore >= 70) riskLevel = 'منخفض';
+
+                if (financialStatus.status === 'no_income') {
+                    riskLevel = 'no_income';
+                    healthScore = 0;
+                }
 
                 return {
                     savingsRate: Math.round(savingsRate),
@@ -2399,10 +2604,10 @@
                     lifestyleRatio: Math.round(lifestyleRatio),
                     billsRatio: Math.round(billsRatio),
                     commitmentRatio: Math.round(commitmentRatio),
-                    remainingBudget: available,
-                    dailyBudget: dailyBudget,
-                    weeklyBudget: weeklyBudget,
-                    monthlyBudget: available,
+                    remainingBudget: available !== null ? available : null,
+                    dailyBudget: dailyBudget !== null ? dailyBudget : null,
+                    weeklyBudget: weeklyBudget !== null ? weeklyBudget : null,
+                    monthlyBudget: monthlyBudget !== null ? monthlyBudget : null,
                     cashFlow: cashFlow,
                     emergencyMargin: 0,
                     financialFlexibility: Math.round(flexibility),
@@ -2417,14 +2622,17 @@
                     expectedSavings: projectedEnd > 0 ? projectedEnd : 0,
                     riskLevel: riskLevel,
                     financialHealthScore: Math.round(healthScore),
-                    daysUntilSalary: Budget.getDaysUntilSalary ? Budget.getDaysUntilSalary() : null,
-                    reservedMoney: FinancialEngine.calculateReservedMoney(),
-                    availableBudget: available
+                    daysUntilSalary: FinancialEngine.getRemainingDaysUntilSalary(),
+                    reservedMoney: reservedMoney,
+                    availableBudget: available,
+                    paidExpenses: paidExpenses,
+                    financialStatus: financialStatus,
+                    salary: salary
                 };
             }
         };
 
-        // Behavior Profiling Engine (unchanged)
+        // Behavior Profiling Engine
         const BehaviorProfilingEngine = {
             analyze(expenses, indicators) {
                 const result = {
@@ -2481,7 +2689,7 @@
             }
         };
 
-        // FinancialPlanEngine (updated)
+        // FinancialPlanEngine
         const FinancialPlanEngine = {
             build(income, indicators, commitments, behavior, settings) {
                 const salary = income.totalIncome;
@@ -2489,7 +2697,7 @@
                 const remaining = indicators.remainingBudget;
                 const dailyBudget = indicators.dailyBudget;
                 const weeklyBudget = indicators.weeklyBudget;
-                const daysUntilSalary = Budget.getDaysUntilSalary ? Budget.getDaysUntilSalary() : null;
+                const daysUntilSalary = indicators.daysUntilSalary;
 
                 const idealDistribution = {
                     'المواد الغذائية': 25,
@@ -2502,7 +2710,7 @@
                 };
 
                 const highDays = behavior.weekendSpending > behavior.weekdaySpending ? ['الجمعة', 'السبت'] : ['الخميس',
-                    'الجمعة'
+                    'الجميع'
                 ];
                 const lowDays = ['الأحد', 'الإثنين', 'الثلاثاء'];
 
@@ -2520,15 +2728,15 @@
                 const upcomingBills = commitments.bills > 0 ? [{ name: 'فواتير شهرية', amount: commitments.bills }] : [];
                 const upcomingInstallments = commitments.loans > 0 ? [{ name: 'أقساط', amount: commitments.loans }] : [];
 
-                const safeLimit = daysUntilSalary && daysUntilSalary > 0 && remaining > 0 ? remaining / daysUntilSalary :
-                    dailyBudget;
+                const safeLimit = daysUntilSalary && daysUntilSalary > 0 && remaining !== null && remaining > 0 ? remaining / daysUntilSalary :
+                    (dailyBudget !== null ? dailyBudget : 0);
                 const maxLimit = safeLimit * 1.5;
 
                 return {
-                    availableAmount: remaining,
-                    dailyBudget: dailyBudget,
-                    weeklyBudget: weeklyBudget,
-                    monthlyBudget: available,
+                    availableAmount: remaining !== null ? remaining : 0,
+                    dailyBudget: dailyBudget !== null ? dailyBudget : 0,
+                    weeklyBudget: weeklyBudget !== null ? weeklyBudget : 0,
+                    monthlyBudget: available !== null ? available : 0,
                     bestDistribution: idealDistribution,
                     highSpendingDays: highDays,
                     lowSpendingDays: lowDays,
@@ -2544,14 +2752,15 @@
             }
         };
 
-        // ForecastEngine (updated)
+        // ============================================================
+        // 7. UPDATED FORECAST ENGINE
+        // ============================================================
         const ForecastEngine = {
             forecast(indicators, plan, expenses) {
-                const remaining = indicators.remainingBudget;
-                const avgDaily = indicators.avgDailySpending;
-                const daysLeft = new Date(WorldTime.now().getFullYear(), WorldTime.now().getMonth() + 1, 0).getDate() -
-                    WorldTime.now().getDate();
-                const projectedEnd = remaining - (avgDaily * daysLeft);
+                const available = indicators.availableBudget;
+                const avgDaily = indicators.avgDailySpending || 0;
+                const daysLeft = FinancialEngine.getRemainingDays();
+                const projectedEnd = available !== null ? available - (avgDaily * daysLeft) : null;
                 const savingsGoal = parseFloat(Storage.getSettings().savingsGoal) || 0;
 
                 const catMap = {};
@@ -2564,7 +2773,7 @@
                 items.forEach(item => {
                     const budget = item.budget || 0;
                     const spent = catMap[item.category] || 0;
-                    if (budget > 0) {
+                    if (budget > 0 && avgDaily > 0) {
                         const projected = spent + (avgDaily * daysLeft);
                         if (projected > budget) {
                             atRisk.push({ category: item.category, projected: Math.round(projected),
@@ -2573,14 +2782,22 @@
                     }
                 });
 
+                const hasValidIncome = indicators.salary > 0;
+                const willMeetSavingsGoal = hasValidIncome && projectedEnd !== null && projectedEnd >= savingsGoal;
+                const willEndWithDeficit = hasValidIncome && projectedEnd !== null && projectedEnd < 0;
+                const willEndWithSurplus = hasValidIncome && projectedEnd !== null && projectedEnd > 0;
+
                 return {
-                    willMeetSavingsGoal: projectedEnd >= savingsGoal,
-                    willEndWithDeficit: projectedEnd < 0,
-                    willEndWithSurplus: projectedEnd > 0,
-                    projectedEndBalance: Math.round(projectedEnd * 100) / 100,
+                    willMeetSavingsGoal: hasValidIncome ? willMeetSavingsGoal : false,
+                    willEndWithDeficit: hasValidIncome ? willEndWithDeficit : false,
+                    willEndWithSurplus: hasValidIncome ? willEndWithSurplus : false,
+                    projectedEndBalance: projectedEnd !== null ? Math.round(projectedEnd * 100) / 100 : null,
                     categoriesAtRisk: atRisk,
-                    daysCanContinue: avgDaily > 0 ? Math.floor(remaining / avgDaily) : 0,
+                    daysCanContinue: (avgDaily > 0 && available !== null && available > 0) ? Math.floor(available / avgDaily) : 0,
                     impactOfNewExpense: (amount) => {
+                        if (projectedEnd === null) {
+                            return { newEndBalance: null, willDeficit: false, message: 'لا يوجد دخل مسجل' };
+                        }
                         const newEnd = projectedEnd - amount;
                         return { newEndBalance: Math.round(newEnd * 100) / 100, willDeficit: newEnd < 0 };
                     }
@@ -2588,23 +2805,21 @@
             }
         };
 
-        // ScenarioEngine (unchanged)
+        // ScenarioEngine
         const ScenarioEngine = {
             simulate(scenarioName, params, context) {
                 const { indicators, plan, forecast } = context;
-                const baseEnd = forecast.projectedEndBalance;
-                const baseHealth = indicators.financialHealthScore;
+                const baseEnd = forecast.projectedEndBalance || 0;
+                const baseHealth = indicators.financialHealthScore || 0;
                 let delta = 0,
                     healthDelta = 0;
                 switch (scenarioName) {
                     case 'reduce_dining':
-                        delta = -(params.percent || 20) / 100 * (indicators.lifestyleRatio / 100 * indicators
-                            .remainingBudget);
+                        delta = -(params.percent || 20) / 100 * (indicators.lifestyleRatio / 100 * (indicators.remainingBudget || 0));
                         healthDelta = 5;
                         break;
                     case 'reduce_entertainment':
-                        delta = -(params.percent || 20) / 100 * (indicators.lifestyleRatio / 100 * indicators
-                            .remainingBudget);
+                        delta = -(params.percent || 20) / 100 * (indicators.lifestyleRatio / 100 * (indicators.remainingBudget || 0));
                         healthDelta = 3;
                         break;
                     case 'increase_savings':
@@ -2639,14 +2854,44 @@
             }
         };
 
-        // RecommendationEngine (updated)
+        // ============================================================
+        // 8. UPDATED RECOMMENDATION ENGINE
+        // ============================================================
         const RecommendationEngine = {
             generate(indicators, commitments, behavior, plan, forecast) {
                 const recs = [];
-                if (indicators.savingsRate < 10) {
+                const available = indicators.availableBudget;
+                const salary = indicators.salary || 0;
+                
+                if (salary <= 0) {
+                    recs.push({
+                        action: 'أدخل راتبك الشهري',
+                        expectedSavings: 0,
+                        impact: 'عالية',
+                        priority: 'Critical',
+                        difficulty: 'سهل',
+                        expectedOutcome: 'تمكين جميع الحسابات المالية',
+                        category: 'الإعدادات'
+                    });
+                    return recs;
+                }
+
+                if (available !== null && available < 0) {
+                    recs.push({
+                        action: 'خفض الإنفاق لتجاوز العجز',
+                        expectedSavings: Math.abs(available) + 100,
+                        impact: 'عالية',
+                        priority: 'Critical',
+                        difficulty: 'صعب',
+                        expectedOutcome: 'تجنب العجز بنهاية الشهر',
+                        category: 'عام'
+                    });
+                }
+
+                if (indicators.savingsRate < 10 && available !== null && available > 0) {
                     recs.push({
                         action: 'زيادة الادخار الشهري',
-                        expectedSavings: indicators.remainingBudget * 0.05,
+                        expectedSavings: available * 0.05,
                         impact: 'عالية',
                         priority: 'High',
                         difficulty: 'متوسط',
@@ -2657,7 +2902,7 @@
                 if (indicators.lifestyleRatio > 30) {
                     recs.push({
                         action: 'تقليل المصروفات الكمالية',
-                        expectedSavings: indicators.remainingBudget * 0.1,
+                        expectedSavings: (available !== null && available > 0) ? available * 0.1 : 0,
                         impact: 'عالية',
                         priority: 'High',
                         difficulty: 'صعب',
@@ -2668,7 +2913,7 @@
                 if (indicators.debtRatio > 30) {
                     recs.push({
                         action: 'تسريع سداد الديون',
-                        expectedSavings: -indicators.remainingBudget * 0.05,
+                        expectedSavings: (available !== null && available > 0) ? -available * 0.05 : 0,
                         impact: 'عالية',
                         priority: 'Critical',
                         difficulty: 'صعب',
@@ -2679,7 +2924,7 @@
                 if (indicators.billsRatio > 15) {
                     recs.push({
                         action: 'ترشيد استهلاك الفواتير',
-                        expectedSavings: indicators.remainingBudget * 0.03,
+                        expectedSavings: (available !== null && available > 0) ? available * 0.03 : 0,
                         impact: 'متوسطة',
                         priority: 'Medium',
                         difficulty: 'سهل',
@@ -2687,7 +2932,7 @@
                         category: 'الفواتير'
                     });
                 }
-                if (behavior.nightSpending > indicators.remainingBudget * 0.05) {
+                if (behavior.nightSpending > (available !== null && available > 0 ? available * 0.05 : 100)) {
                     recs.push({
                         action: 'تقليل الإنفاق الليلي',
                         expectedSavings: behavior.nightSpending * 0.5,
@@ -2712,7 +2957,7 @@
                 if (forecast.willEndWithDeficit) {
                     recs.push({
                         action: 'خفض الإنفاق اليومي',
-                        expectedSavings: Math.abs(forecast.projectedEndBalance) + 100,
+                        expectedSavings: (forecast.projectedEndBalance !== null ? Math.abs(forecast.projectedEndBalance) : 0) + 100,
                         impact: 'عالية',
                         priority: 'Critical',
                         difficulty: 'صعب',
@@ -2720,13 +2965,16 @@
                         category: 'عام'
                     });
                 }
+
+                const filteredRecs = recs.filter(r => r.expectedSavings > 0 || r.action.includes('أدخل راتبك'));
+
                 const priorityOrder = { Critical: 0, High: 1, Medium: 2, Low: 3, Optional: 4 };
-                recs.sort((a, b) => (priorityOrder[a.priority] || 5) - (priorityOrder[b.priority] || 5));
-                return recs;
+                filteredRecs.sort((a, b) => (priorityOrder[a.priority] || 5) - (priorityOrder[b.priority] || 5));
+                return filteredRecs;
             }
         };
 
-        // PriorityEngine (unchanged)
+        // PriorityEngine
         const PriorityEngine = {
             assign(commitments, indicators) {
                 const priorities = {};
@@ -2749,7 +2997,9 @@
             }
         };
 
-        // Financial Context Builder (updated)
+        // ============================================================
+        // 9. UPDATED FINANCIAL CONTEXT BUILDER
+        // ============================================================
         const FinancialContextBuilder = {
             build() {
                 const expenses = FinancialEngine.getMonthExpenses();
@@ -2784,9 +3034,15 @@
                     };
                 });
 
+                const status = FinancialEngine.getFinancialStatus();
+
                 return {
-                    financialHealth: { score: indicators.financialHealthScore, riskLevel: indicators.riskLevel,
-                        profile: behavior.profile },
+                    financialHealth: {
+                        score: indicators.financialHealthScore,
+                        riskLevel: indicators.riskLevel,
+                        profile: behavior.profile,
+                        status: status
+                    },
                     income: income,
                     commitments: commitments,
                     indicators: indicators,
@@ -2802,13 +3058,14 @@
                     availableBudget: availableBudget,
                     categories: categoriesWithReserved,
                     budgetItems: items,
-                    timestamp: new Date().toISOString()
+                    timestamp: new Date().toISOString(),
+                    financialStatus: status
                 };
             }
         };
 
         // ============================================================
-        // 6. EXPENSE PARSER (unchanged)
+        // 10. EXPENSE PARSER
         // ============================================================
         const ExpenseParser = {
             parse(text) {
@@ -2912,7 +3169,7 @@
         };
 
         // ============================================================
-        // 7. GEMINI (updated context)
+        // 11. GEMINI (updated context)
         // ============================================================
         const Gemini = {
             getKeys() { return Storage.getGeminiKeys(); },
@@ -2967,8 +3224,9 @@
                 }
             },
 
-            buildContextString(context) {
+            buildContextString: function(context) {
                 if (!context) return 'لا توجد بيانات مالية متوفرة.';
+                
                 const f = context.indicators || {};
                 const income = context.income || {};
                 const plan = context.plan || {};
@@ -2978,34 +3236,48 @@
                 const atRisk = forecast.categoriesAtRisk || [];
                 const categories = context.categories || {};
                 const items = context.budgetItems || [];
+                const status = context.financialStatus || {};
+
+                const reserved = FinancialEngine.calculateReservedMoney();
+                const paid = FinancialEngine.calculatePaidExpenses();
+                const available = FinancialEngine.calculateAvailableBudget();
+                const daily = FinancialEngine.calculateDailyBudget();
+                const weekly = FinancialEngine.calculateWeeklyBudget();
+                const salary = FinancialEngine.getSalary();
+                const daysUntilSalary = FinancialEngine.getRemainingDaysUntilSalary();
 
                 let str = '--- البيانات المالية الحقيقية ---\n';
-                str += `الدخل الإجمالي: ${Utils.formatCurrency(income.total || 0)}\n`;
-                str += `الأموال المحجوزة: ${Utils.formatCurrency(context.reservedMoney || 0)}\n`;
-                str += `المصروفات الفعلية: ${Utils.formatCurrency(FinancialEngine.calculatePaidExpenses())}\n`;
-                str += `المتاح للصرف: ${Utils.formatCurrency(context.availableBudget || 0)}\n`;
-                str += `المتبقي: ${Utils.formatCurrency(f.remainingBudget || 0)}\n`;
-                str += `ميزانية اليوم: ${Utils.formatCurrency(f.dailyBudget || 0)}\n`;
-                str += `ميزانية الأسبوع: ${Utils.formatCurrency(f.weeklyBudget || 0)}\n`;
+                
+                if (status.status === 'no_income') {
+                    str += '⚠️ لم يتم إدخال دخل بعد. يرجى إدخال الراتب الشهري لتفعيل جميع الحسابات المالية.\n\n';
+                    return str;
+                }
+
+                str += `الدخل الإجمالي: ${Utils.formatCurrency(salary)}\n`;
+                str += `الأموال المحجوزة: ${Utils.formatCurrency(reserved)}\n`;
+                str += `المصروفات الفعلية: ${Utils.formatCurrency(paid)}\n`;
+                str += `المتاح للصرف: ${available !== null ? Utils.formatCurrency(available) : '—'}\n`;
+                str += `المتبقي: ${f.remainingBudget !== null ? Utils.formatCurrency(f.remainingBudget) : '—'}\n`;
+                str += `ميزانية اليوم: ${daily !== null ? Utils.formatCurrency(daily) : '—'}\n`;
+                str += `ميزانية الأسبوع: ${weekly !== null ? Utils.formatCurrency(weekly) : '—'}\n`;
                 str += `نسبة الادخار: ${f.savingsRate || 0}%\n`;
                 str += `نسبة الديون: ${f.debtRatio || 0}%\n`;
                 str += `نسبة الكماليات: ${f.lifestyleRatio || 0}%\n`;
                 str += `درجة الصحة المالية: ${f.financialHealthScore || 0}/100 (${f.riskLevel || 'غير معروف'})\n`;
-                str += `الأيام حتى نزول الراتب: ${f.daysUntilSalary !== null ? f.daysUntilSalary + ' يوم' : 'غير محدد'}\n\n`;
+                str += `الأيام حتى نزول الراتب: ${daysUntilSalary !== null ? daysUntilSalary + ' يوم' : 'غير محدد'}\n\n`;
 
-                // Budget Items
                 str += `--- بنود الميزانية ---\n`;
                 items.forEach(item => {
-                    const status = item.isReserved ? '🔒 محجوز' : '🔓 غير محجوز';
+                    const status2 = item.isReserved ? '🔒 محجوز' : '🔓 غير محجوز';
                     const spent = item.spent || 0;
                     const remaining = item.budget - spent;
-                    str += `${item.name} (${item.category}): ميزانية ${Utils.formatCurrency(item.budget)}, صرف ${Utils.formatCurrency(spent)}, متبقي ${Utils.formatCurrency(remaining)}, ${status}\n`;
+                    str += `${item.name} (${item.category}): ميزانية ${Utils.formatCurrency(item.budget)}, صرف ${Utils.formatCurrency(spent)}, متبقي ${Utils.formatCurrency(remaining)}, ${status2}\n`;
                 });
 
-                if (plan.safeSpendingLimit !== undefined) {
+                if (plan.safeSpendingLimit !== undefined && plan.safeSpendingLimit > 0) {
                     str += `\nالحد الآمن للصرف اليومي: ${Utils.formatCurrency(plan.safeSpendingLimit || 0)}\n`;
                 }
-                if (forecast.projectedEndBalance !== undefined) {
+                if (forecast.projectedEndBalance !== null && forecast.projectedEndBalance !== undefined) {
                     str += `الرصيد المتوقع نهاية الشهر: ${Utils.formatCurrency(forecast.projectedEndBalance || 0)}\n`;
                 }
                 if (forecast.willEndWithDeficit !== undefined) {
@@ -3079,7 +3351,6 @@
                 - set_salary (amount)
                 - set_salary_date (date)
                 - set_savings_goal (amount)
-                - set_category_budget (category, amount)  // deprecated, use set_budget_item
                 - set_budget_item (id, budget)
                 - set_daily_budget (amount)
                 - set_weekly_budget (amount)
@@ -3105,6 +3376,11 @@
                 const daily = context?.plan?.safeSpendingLimit || context?.indicators?.dailyBudget || 0;
                 const reserved = context?.reservedMoney || 0;
                 const available = context?.availableBudget || 0;
+                const status = context?.financialStatus || {};
+
+                if (status.status === 'no_income') {
+                    return '📊 يرجى إدخال راتبك الشهري أولاً من خلال صفحة الإعدادات لتفعيل جميع الحسابات المالية.';
+                }
 
                 if (/حل|ساعدني|وش أسوي/.test(query)) {
                     let response = `📋 **خلاصة المشكلة**\n`;
@@ -3236,8 +3512,14 @@
                     const daily = context?.plan?.safeSpendingLimit || context?.indicators?.dailyBudget || 0;
                     const reserved = context?.reservedMoney || 0;
                     const available = context?.availableBudget || 0;
+                    const status = context?.financialStatus || {};
+                    
+                    if (status.status === 'no_income') {
+                        return '📊 يرجى إدخال راتبك الشهري أولاً من خلال صفحة الإعدادات لتفعيل جميع الحسابات المالية.';
+                    }
+                    
                     if (question.includes('كم أستطيع أن أصرف اليوم')) {
-                        return `📊 بناءً على بياناتك:\n\nالأموال المحجوزة: ${Utils.formatCurrency(reserved)}\nالميزانية المتاحة: ${Utils.formatCurrency(available)}\nالمتبقي اليومي: ${Utils.formatCurrency(daily > 0 ? daily : context?.indicators?.dailyBudget || 0)}\n\n💡 يمكنك أن تصرف اليوم ${Utils.formatCurrency(daily > 0 ? daily : context?.indicators?.dailyBudget || 0)} ريال. هذا المبلغ يحافظ على استمراريتك حتى نزول الراتب القادم.`;
+                        return `📊 بناءً على بياناتك:\n\nالأموال المحجوزة: ${Utils.formatCurrency(reserved)}\nالميزانية المتاحة: ${Utils.formatCurrency(available)}\nالمتبقي اليومي: ${Utils.formatCurrency(daily > 0 ? daily : 0)}\n\n💡 يمكنك أن تصرف اليوم ${Utils.formatCurrency(daily > 0 ? daily : 0)} ريال. هذا المبلغ يحافظ على استمراريتك حتى نزول الراتب القادم.`;
                     }
                     if (question.includes('هل تجاوزت ميزانية البنزين')) {
                         const items = FinancialEngine.getBudgetItems();
@@ -3273,7 +3555,7 @@
         };
 
         // ============================================================
-        // 8. COMMAND EXECUTOR (updated)
+        // 12. COMMAND EXECUTOR
         // ============================================================
         const Commands = {
             extract(text) {
@@ -3385,7 +3667,7 @@
         };
 
         // ============================================================
-        // 9. CHARTS (unchanged)
+        // 13. CHARTS
         // ============================================================
         const Charts = {
             drawBar(ctx, labels, data, colors, label) {
@@ -3498,7 +3780,7 @@
         }
 
         // ============================================================
-        // 10. BUDGET (CRUD - using FinancialEngine)
+        // 14. BUDGET (CRUD - using FinancialEngine)
         // ============================================================
         const Budget = {
             getExpenses() { return Storage.getExpenses(); },
@@ -3548,30 +3830,50 @@
             getMonthlyTotals(expenses) { const map = {};
                 expenses.forEach(e => { const m = e.date.substring(0, 7);
                     map[m] = (map[m] || 0) + (parseFloat(e.amount) || 0); }); return map; },
-            // Wrapper for FinancialEngine methods (for backward compatibility)
+            
+            // Updated methods using FinancialEngine
             calculateReservedMoney() { return FinancialEngine.calculateReservedMoney(); },
             calculateAvailableBudget() { return FinancialEngine.calculateAvailableBudget(); },
-            getRemaining(expenses) { return FinancialEngine.calculateAvailableBudget(); },
-            getDailyBudget() { return FinancialEngine.getDailyBudget(); },
-            getWeeklyBudget() { return FinancialEngine.getWeeklyBudget(); },
-            getMonthlyBudget() { return FinancialEngine.getMonthlyBudget(); },
-            getDaysUntilSalary() { const settings = Storage.getSettings(); if (!settings.salaryDate) return null; const base =
-                    new Date(settings.salaryDate); if (isNaN(base.getTime())) return null; const day = base.getDate(); const now =
-                    WorldTime.now(); const today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()); let candidate =
-                    new Date(now.getFullYear(), now.getMonth(), day); if (candidate < today0) { candidate = new Date(now
-                        .getFullYear(), now.getMonth() + 1, day); } return Math.round((candidate - today0) / 86400000); },
-            setDailyBudget(amount) { const days = FinancialEngine.getRemainingDays(); const newSalary = amount * days; const s =
-                    Storage.getSettings();
+            getRemaining() {
+                const available = FinancialEngine.calculateAvailableBudget();
+                return available !== null ? available : 0;
+            },
+            getDailyBudget() {
+                const daily = FinancialEngine.calculateDailyBudget();
+                return daily !== null ? daily : 0;
+            },
+            getWeeklyBudget() {
+                const weekly = FinancialEngine.calculateWeeklyBudget();
+                return weekly !== null ? weekly : 0;
+            },
+            getMonthlyBudget() {
+                const monthly = FinancialEngine.calculateMonthlyBudget();
+                return monthly !== null ? monthly : 0;
+            },
+            getDaysUntilSalary() { return FinancialEngine.getRemainingDaysUntilSalary(); },
+            setDailyBudget(amount) {
+                const days = FinancialEngine.getRemainingDays();
+                const newSalary = amount * days;
+                const s = Storage.getSettings();
                 s.salary = parseFloat(newSalary) || 0;
                 Storage.setSettings(s);
-                FinancialEngine.refreshAll(); return newSalary; },
-            setMonthlyBudget(amount) { const s = Storage.getSettings();
+                FinancialEngine.refreshAll();
+                return newSalary;
+            },
+            setMonthlyBudget(amount) {
+                const s = Storage.getSettings();
                 s.salary = parseFloat(amount) || 0;
                 Storage.setSettings(s);
-                FinancialEngine.refreshAll(); return amount; },
-            getCategoryRemaining(category) { const items = FinancialEngine.getBudgetItems(); const item = items.find(i => i
-                    .category === category); if (!item) return 0; const spent = this.getByCategory(this.getMonthExpenses())[
-                    category] || 0; return item.budget - spent; },
+                FinancialEngine.refreshAll();
+                return amount;
+            },
+            getCategoryRemaining(category) {
+                const items = FinancialEngine.getBudgetItems();
+                const item = items.find(i => i.category === category);
+                if (!item) return 0;
+                const spent = this.getByCategory(this.getMonthExpenses())[category] || 0;
+                return item.budget - spent;
+            },
             // travel & temp
             addTravelExpense(data) { const exp = Storage.getTravelExpenses(); const entry = { id: Utils.generateId(),
                     amount: parseFloat(data.amount) || 0, description: data.description || '', category: data.category ||
@@ -3608,16 +3910,14 @@
         };
 
         // ============================================================
-        // 11. UI (updated with new pages and fixed modals)
+        // 15. UI (updated with new pages and fixed modals)
         // ============================================================
         const UI = {
             chatMessages: null,
             financialContext: null,
 
             init() {
-                // ترحيل البيانات القديمة
                 migrateToBudgetItems();
-                // مزامنة المصروفات مع البنود
                 FinancialEngine.syncBudgetItemsSpent();
 
                 this.chatMessages = Utils.id('chatMessages');
@@ -3647,15 +3947,18 @@
                     if (ctx) {
                         let welcome = '👋 مرحباً! أنا مستشارك المالي الشخصي.\n\n';
                         const health = ctx.financialHealth?.score || 0;
-                        const remaining = ctx.indicators?.remainingBudget || 0;
+                        const remaining = ctx.indicators?.remainingBudget;
                         const reserved = ctx.reservedMoney || 0;
-                        if (health >= 70) {
-                            welcome += `✅ وضعك المالي ممتاز (${health}/100). المتبقي ${Utils.formatCurrency(remaining)}. استمر!`;
+                        const status = ctx.financialStatus || {};
+                        
+                        if (status.status === 'no_income') {
+                            welcome += `📊 يرجى إدخال راتبك الشهري من خلال صفحة الإعدادات لتفعيل جميع الحسابات المالية.`;
+                        } else if (health >= 70) {
+                            welcome += `✅ وضعك المالي ممتاز (${health}/100). المتبقي ${remaining !== null ? Utils.formatCurrency(remaining) : '—'}. استمر!`;
                         } else if (health >= 50) {
-                            welcome += `⚠️ وضعك المالي متوسط (${health}/100). المتبقي ${Utils.formatCurrency(remaining)}. يمكن التحسين.`;
+                            welcome += `⚠️ وضعك المالي متوسط (${health}/100). المتبقي ${remaining !== null ? Utils.formatCurrency(remaining) : '—'}. يمكن التحسين.`;
                         } else {
-                            welcome +=
-                                `🔴 وضعك المالي يحتاج اهتماماً (${health}/100). المتبقي ${Utils.formatCurrency(remaining)}. أحتاج مساعدتك لتحسين الوضع.`;
+                            welcome += `🔴 وضعك المالي يحتاج اهتماماً (${health}/100). المتبقي ${remaining !== null ? Utils.formatCurrency(remaining) : '—'}. أحتاج مساعدتك لتحسين الوضع.`;
                         }
                         welcome += `\n\n🔒 الأموال المحجوزة: ${Utils.formatCurrency(reserved)}`;
                         welcome += '\n\n💡 اسألني عن أي شيء مالي، وسأقدم لك تحليلاً عميقاً بناءً على بياناتك الحقيقية.';
@@ -3716,7 +4019,6 @@
                 const modal = Utils.id(modalId);
                 if (!modal) return;
                 const closeModal = () => this.closeModal(modalId);
-                // close buttons
                 if (closeBtnIds) {
                     (Array.isArray(closeBtnIds) ? closeBtnIds : [closeBtnIds]).forEach(id => {
                         const btn = Utils.id(id);
@@ -3731,7 +4033,6 @@
                             closeModal(); });
                     });
                 }
-                // click outside content
                 Utils.on(modal, 'click', (e) => {
                     if (e.target === modal) closeModal();
                 });
@@ -3813,7 +4114,6 @@
                         this.renderAll();
                     }
                 });
-                // store reference to set currentExpenseId when showing detail
                 this._expenseDetailDelete = (id) => { currentExpenseId = id; };
             },
 
@@ -4357,7 +4657,7 @@
 
             // ===== RENDER METHODS =====
 
-            renderDashboard(ctx) {
+            renderDashboard: function(ctx) {
                 ctx = ctx || this.getContext();
                 const cardsContainer = Utils.id('dashboardCards');
                 const summaryContainer = Utils.id('dashboardSummary');
@@ -4366,90 +4666,105 @@
                 const plan = ctx.plan || {};
                 const forecast = ctx.forecast || {};
                 const income = ctx.income || {};
+                const status = ctx.financialStatus || {};
 
-                const remaining = f.remainingBudget || 0;
                 const salary = income.total || 0;
-                const daily = f.dailyBudget || 0;
-                const weekly = f.weeklyBudget || 0;
-                const monthly = f.monthlyBudget || 0;
+                const reserved = ctx.reservedMoney || 0;
+                const paid = f.paidExpenses || 0;
+                const available = f.availableBudget;
+                const daily = f.dailyBudget;
+                const weekly = f.weeklyBudget;
                 const savingsGoal = parseFloat(Storage.getSettings().savingsGoal) || 0;
                 const healthScore = health.score || 0;
-                const reserved = ctx.reservedMoney || 0;
-                const available = ctx.availableBudget || 0;
-                const paid = FinancialEngine.calculatePaidExpenses();
+                const daysUntilSalary = f.daysUntilSalary;
 
-                const cards = [
-                    { icon: 'fa-money-bill-wave', label: '💰 الراتب', value: Utils.formatCurrency(salary),
-                        cls: 'accent' },
-                    { icon: 'fa-lock', label: '🔒 الأموال المحجوزة', value: Utils.formatCurrency(reserved),
-                        cls: 'accent' },
-                    { icon: 'fa-arrow-down', label: '💸 المصروفات الفعلية', value: Utils.formatCurrency(paid),
-                        cls: 'negative' },
-                    { icon: 'fa-check-circle', label: '✅ المتاح للصرف', value: Utils.formatCurrency(available),
-                        cls: available >= 0 ? 'positive' : 'negative' },
-                    { icon: 'fa-calendar-day', label: '📅 ميزانية اليوم', value: Utils.formatCurrency(daily),
-                        cls: 'accent' },
-                    { icon: 'fa-calendar-week', label: '📅 ميزانية الأسبوع', value: Utils.formatCurrency(weekly),
-                        cls: 'accent' },
-                    { icon: 'fa-piggy-bank', label: '🎯 هدف الادخار', value: Utils.formatCurrency(savingsGoal),
-                        cls: 'accent' },
-                    { icon: 'fa-heartbeat', label: 'الصحة المالية', value: healthScore + '/100',
-                        cls: healthScore >= 70 ? 'positive' : healthScore >= 50 ? 'accent' : 'negative' },
-                    { icon: 'fa-user-tag', label: 'الملف الشخصي', value: health.profile || 'Balanced',
-                    cls: 'accent' },
-                    { icon: 'fa-hourglass-half', label: 'الأيام المتبقية', value: (f.daysUntilSalary !== null ?
-                            f.daysUntilSalary + ' يوم' : '—'), cls: f.daysUntilSalary <= 3 ? 'positive' :
-                        'accent' }
-                ];
+                let cards = [];
+
+                if (status.status === 'no_income') {
+                    cards = [
+                        { icon: 'fa-edit', label: '💡 الراتب', value: 'أدخل الراتب أولاً', cls: 'accent' },
+                        { icon: 'fa-lock', label: '🔒 الأموال المحجوزة', value: Utils.formatCurrency(reserved), cls: 'accent' },
+                        { icon: 'fa-arrow-down', label: '💸 المصروفات', value: Utils.formatCurrency(paid), cls: 'negative' },
+                        { icon: 'fa-info-circle', label: '⚠️ الحالة', value: 'لا يوجد دخل مسجل', cls: 'accent' }
+                    ];
+                } else if (status.status === 'commitments_exceed_income') {
+                    cards = [
+                        { icon: 'fa-money-bill-wave', label: '💰 الراتب', value: Utils.formatCurrency(salary), cls: 'accent' },
+                        { icon: 'fa-lock', label: '🔒 الأموال المحجوزة', value: Utils.formatCurrency(reserved), cls: 'negative' },
+                        { icon: 'fa-arrow-down', label: '💸 المصروفات', value: Utils.formatCurrency(paid), cls: 'negative' },
+                        { icon: 'fa-exclamation-triangle', label: '⚠️ الالتزامات', value: 'تتجاوز الراتب', cls: 'negative' }
+                    ];
+                } else if (status.status === 'overspent') {
+                    cards = [
+                        { icon: 'fa-money-bill-wave', label: '💰 الراتب', value: Utils.formatCurrency(salary), cls: 'accent' },
+                        { icon: 'fa-lock', label: '🔒 الأموال المحجوزة', value: Utils.formatCurrency(reserved), cls: 'accent' },
+                        { icon: 'fa-arrow-down', label: '💸 المصروفات', value: Utils.formatCurrency(paid), cls: 'negative' },
+                        { icon: 'fa-exclamation-circle', label: '⚠️ التجاوز', value: Utils.formatCurrency(Math.abs(available || 0)), cls: 'negative' }
+                    ];
+                } else {
+                    cards = [
+                        { icon: 'fa-money-bill-wave', label: '💰 الراتب', value: Utils.formatCurrency(salary), cls: 'accent' },
+                        { icon: 'fa-lock', label: '🔒 الأموال المحجوزة', value: Utils.formatCurrency(reserved), cls: 'accent' },
+                        { icon: 'fa-arrow-down', label: '💸 المصروفات الفعلية', value: Utils.formatCurrency(paid), cls: 'negative' },
+                        { icon: 'fa-check-circle', label: '✅ المتاح للصرف', value: available !== null ? Utils.formatCurrency(available) : '—', cls: available !== null && available >= 0 ? 'positive' : 'negative' },
+                        { icon: 'fa-calendar-day', label: '📅 ميزانية اليوم', value: daily !== null ? Utils.formatCurrency(daily) : '—', cls: daily !== null && daily > 0 ? 'accent' : 'negative' },
+                        { icon: 'fa-calendar-week', label: '📅 ميزانية الأسبوع', value: weekly !== null ? Utils.formatCurrency(weekly) : '—', cls: weekly !== null && weekly > 0 ? 'accent' : 'negative' },
+                        { icon: 'fa-piggy-bank', label: '🎯 هدف الادخار', value: Utils.formatCurrency(savingsGoal), cls: 'accent' },
+                        { icon: 'fa-heartbeat', label: 'الصحة المالية', value: healthScore + '/100', cls: healthScore >= 70 ? 'positive' : healthScore >= 50 ? 'accent' : 'negative' },
+                        { icon: 'fa-user-tag', label: 'الملف الشخصي', value: health.profile || 'Balanced', cls: 'accent' },
+                        { icon: 'fa-hourglass-half', label: 'الأيام المتبقية', value: daysUntilSalary !== null ? daysUntilSalary + ' يوم' : '—', cls: daysUntilSalary !== null && daysUntilSalary <= 3 ? 'positive' : 'accent' }
+                    ];
+                }
 
                 const recs = ctx.recommendations || [];
-                if (recs.length > 0) {
+                if (recs.length > 0 && status.status !== 'no_income') {
                     const topRec = recs[0];
-                    cards.push({ icon: 'fa-lightbulb', label: 'أولوية', value: topRec.action.length > 25 ?
-                            topRec.action.substring(0, 25) + '...' : topRec.action, cls: topRec.priority ===
-                            'Critical' ? 'negative' : 'accent' });
+                    cards.push({ icon: 'fa-lightbulb', label: 'أولوية', value: topRec.action.length > 25 ? topRec.action.substring(0, 25) + '...' : topRec.action, cls: topRec.priority === 'Critical' ? 'negative' : 'accent' });
                 }
 
                 cardsContainer.innerHTML = cards.map(c =>
-                    '<div class="dash-card ' + c.cls + '" data-card="' + c.label +
-                    '"><div class="card-icon"><i class="fas ' + c.icon +
-                    '"></i></div><div class="card-label">' + c.label +
-                    '</div><div class="card-value">' + c.value + '</div></div>'
+                    '<div class="dash-card ' + c.cls + '" data-card="' + c.label + '"><div class="card-icon"><i class="fas ' + c.icon + '"></i></div><div class="card-label">' + c.label + '</div><div class="card-value">' + c.value + '</div></div>'
                 ).join('');
 
                 const topCat = ctx.behavior?.topCategories?.[0];
                 const count = ctx.raw?.count || 0;
                 const avgDaily = f.avgDailySpending || 0;
+
+                let statusMessage = '';
+                if (status.status === 'no_income') {
+                    statusMessage = '⚠️ أدخل راتبك الشهري لتفعيل جميع الحسابات';
+                } else if (status.status === 'commitments_exceed_income') {
+                    statusMessage = `⚠️ إجمالي الالتزامات (${Utils.formatCurrency(reserved)}) أكبر من الراتب (${Utils.formatCurrency(salary)})`;
+                } else if (status.status === 'overspent') {
+                    statusMessage = `⚠️ لقد تجاوزت ميزانيتك بمقدار ${Utils.formatCurrency(Math.abs(available || 0))}`;
+                } else if (available !== null && available >= 0) {
+                    statusMessage = `✅ وضع مالي مستقر`;
+                } else {
+                    statusMessage = `📊 عرض البيانات المالية`;
+                }
+
                 summaryContainer.innerHTML =
-                    '<div class="summary-item glass"><div class="label">أعلى تصنيف صرف</div><div class="value">' +
-                    (topCat ? topCat[0] + ' (' + Utils.formatCurrency(topCat[1]) + ')' : '—') +
-                    '</div></div><div class="summary-item glass"><div class="label">عدد المصروفات هذا الشهر</div><div class="value">' +
-                    count +
-                    '</div></div><div class="summary-item glass"><div class="label">متوسط المصروف اليومي</div><div class="value">' +
-                    Utils.formatCurrency(avgDaily) +
-                    '</div></div><div class="summary-item glass"><div class="label">نسبة الالتزام</div><div class="value">' +
-                    Math.round(f.commitmentRatio || 0) + '%</div></div>';
+                    '<div class="summary-item glass"><div class="label">أعلى تصنيف صرف</div><div class="value">' + (topCat ? topCat[0] + ' (' + Utils.formatCurrency(topCat[1]) + ')' : '—') + '</div></div>' +
+                    '<div class="summary-item glass"><div class="label">عدد المصروفات هذا الشهر</div><div class="value">' + count + '</div></div>' +
+                    '<div class="summary-item glass"><div class="label">متوسط المصروف اليومي</div><div class="value">' + Utils.formatCurrency(avgDaily) + '</div></div>' +
+                    '<div class="summary-item glass"><div class="label">نسبة الالتزام</div><div class="value">' + Math.round(f.commitmentRatio || 0) + '%</div></div>' +
+                    '<div class="summary-item glass" style="grid-column:1/-1;background:var(--bg-glass);"><div class="label">الحالة المالية</div><div class="value" style="font-size:1rem;">' + statusMessage + '</div></div>';
 
                 const extraContainer = Utils.id('dashboardExtraCards');
                 if (extraContainer) {
                     const extraCards = [];
                     const travelBudget = Storage.getTravelBudget();
-                    if (travelBudget.enabled && (travelBudget.totalBudget > 0 || Storage.getTravelExpenses()
-                            .length > 0)) { const travelRemaining = Budget.getTravelRemaining();
-                        extraCards.push({ icon: 'fa-plane', label: 'متبقي ميزانية السفر' + (travelBudget
-                                .tripName ? ' - ' + travelBudget.tripName : ''), value: Utils
-                                .formatCurrency(travelRemaining), cls: travelRemaining >= 0 ?
-                                'positive' : 'negative' }); }
+                    if (travelBudget.enabled && (travelBudget.totalBudget > 0 || Storage.getTravelExpenses().length > 0)) {
+                        const travelRemaining = Budget.getTravelRemaining();
+                        extraCards.push({ icon: 'fa-plane', label: 'متبقي ميزانية السفر' + (travelBudget.tripName ? ' - ' + travelBudget.tripName : ''), value: Utils.formatCurrency(travelRemaining), cls: travelRemaining >= 0 ? 'positive' : 'negative' });
+                    }
                     const tempBudget = Storage.getTempBudget();
-                    if (tempBudget.totalBudget > 0 || Storage.getTempExpenses().length > 0) { const tempRemaining =
-                            Budget.getTempRemaining();
-                        extraCards.push({ icon: 'fa-umbrella-beach', label: 'متبقي الميزانية المؤقتة',
-                            value: Utils.formatCurrency(tempRemaining), cls: tempRemaining >= 0 ?
-                                'positive' : 'negative' }); }
+                    if (tempBudget.totalBudget > 0 || Storage.getTempExpenses().length > 0) {
+                        const tempRemaining = Budget.getTempRemaining();
+                        extraCards.push({ icon: 'fa-umbrella-beach', label: 'متبقي الميزانية المؤقتة', value: Utils.formatCurrency(tempRemaining), cls: tempRemaining >= 0 ? 'positive' : 'negative' });
+                    }
                     extraContainer.innerHTML = extraCards.map(c =>
-                        '<div class="dash-card ' + c.cls + '"><div class="card-icon"><i class="fas ' + c
-                        .icon + '"></i></div><div class="card-label">' + c.label +
-                        '</div><div class="card-value">' + c.value + '</div></div>'
+                        '<div class="dash-card ' + c.cls + '"><div class="card-icon"><i class="fas ' + c.icon + '"></i></div><div class="card-label">' + c.label + '</div><div class="card-value">' + c.value + '</div></div>'
                     ).join('');
                 }
             },
@@ -4757,8 +5072,12 @@
                 const paid = FinancialEngine.calculatePaidExpenses();
                 const reserved = FinancialEngine.calculateReservedMoney();
                 const salary = FinancialEngine.getSalary();
-                Charts.drawBar(remCtx, ['المتاح للصرف', 'المصروفات', 'المحجوز', 'الراتب'], [Math.max(available, 0), paid,
-                        reserved, salary
+                const displayAvailable = available !== null ? Math.max(available, 0) : 0;
+                const displayPaid = paid || 0;
+                const displayReserved = reserved || 0;
+                const displaySalary = salary || 0;
+                Charts.drawBar(remCtx, ['المتاح للصرف', 'المصروفات', 'المحجوز', 'الراتب'], [displayAvailable, displayPaid,
+                        displayReserved, displaySalary
                     ], ['#1F7A5C', '#B3452A', '#C98A2E', '#123C57'], 'المتاح');
             }
         };
