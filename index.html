@@ -1938,13 +1938,18 @@
 
     <script>
         // ============================================================
-        // 1. UTILS
+        // 1. UTILS (improved: safer event binding)
         // ============================================================
         const Utils = {
             id: (el) => document.getElementById(el),
             qs: (sel, ctx = document) => ctx.querySelector(sel),
             qsa: (sel, ctx = document) => [...ctx.querySelectorAll(sel)],
-            on: (el, ev, fn) => (typeof el === 'string' ? Utils.qs(el) : el).addEventListener(ev, fn, { passive: true }),
+            on: (el, ev, fn) => {
+                const element = typeof el === 'string' ? Utils.qs(el) : el;
+                if (element) {
+                    element.addEventListener(ev, fn);
+                }
+            },
             formatCurrency: (val) => { const num = parseFloat(val) || 0; return num.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',') +
                     ' ريال'; },
             formatCurrencyShort: (val) => { const num = parseFloat(val) || 0; return num.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g,
@@ -2052,7 +2057,10 @@
             setTempExpenses(exp) { this.set('temp_expenses', exp); },
             // Migration flag
             isMigrated() { return this.get('migrated_v2', false); },
-            setMigrated() { this.set('migrated_v2', true); }
+            setMigrated() { this.set('migrated_v2', true); },
+            // First launch
+            isFirstLaunch() { return !localStorage.getItem('ai_budget_launched'); },
+            markLaunched() { localStorage.setItem('ai_budget_launched', 'true'); }
         };
 
         // ============================================================
@@ -3600,7 +3608,7 @@
         };
 
         // ============================================================
-        // 11. UI (updated with new pages and logic)
+        // 11. UI (updated with new pages and fixed modals)
         // ============================================================
         const UI = {
             chatMessages: null,
@@ -3695,6 +3703,40 @@
                 this.chatMessages.scrollTop = this.chatMessages.scrollHeight;
             },
 
+            // --- Helpers for modals ---
+            openModal(id) {
+                const modal = Utils.id(id);
+                if (modal) modal.classList.add('open');
+            },
+            closeModal(id) {
+                const modal = Utils.id(id);
+                if (modal) modal.classList.remove('open');
+            },
+            setupModalClose(modalId, closeBtnIds, cancelBtnIds) {
+                const modal = Utils.id(modalId);
+                if (!modal) return;
+                const closeModal = () => this.closeModal(modalId);
+                // close buttons
+                if (closeBtnIds) {
+                    (Array.isArray(closeBtnIds) ? closeBtnIds : [closeBtnIds]).forEach(id => {
+                        const btn = Utils.id(id);
+                        if (btn) Utils.on(btn, 'click', (e) => { e.preventDefault();
+                            closeModal(); });
+                    });
+                }
+                if (cancelBtnIds) {
+                    (Array.isArray(cancelBtnIds) ? cancelBtnIds : [cancelBtnIds]).forEach(id => {
+                        const btn = Utils.id(id);
+                        if (btn) Utils.on(btn, 'click', (e) => { e.preventDefault();
+                            closeModal(); });
+                    });
+                }
+                // click outside content
+                Utils.on(modal, 'click', (e) => {
+                    if (e.target === modal) closeModal();
+                });
+            },
+
             setupTheme() {
                 const toggle = Utils.id('themeToggle');
                 const saved = localStorage.getItem('ai_budget_theme') || 'light';
@@ -3759,19 +3801,20 @@
                     year: 'numeric', month: 'long', day: 'numeric' }); },
 
             setupExpenseDetailModal() {
-                const modal = Utils.id('expenseDetailModal');
-                const closeBtn = Utils.id('closeDetailModal');
-                const closeBtn2 = Utils.id('closeDetailBtn');
+                const modalId = 'expenseDetailModal';
+                this.setupModalClose(modalId, ['closeDetailModal', 'closeDetailBtn']);
                 const deleteBtn = Utils.id('deleteDetailBtn');
                 let currentExpenseId = null;
-                const closeModal = () => modal.classList.remove('open');
-                Utils.on(closeBtn, 'click', closeModal);
-                Utils.on(closeBtn2, 'click', closeModal);
-                modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
-                Utils.on(deleteBtn, 'click', () => { if (!currentExpenseId) return; if (confirm(
-                        'هل تريد حذف هذا المصروف؟')) { Budget.deleteExpense(currentExpenseId);
-                        closeModal();
-                        this.renderAll(); } });
+                Utils.on(deleteBtn, 'click', () => {
+                    if (!currentExpenseId) return;
+                    if (confirm('هل تريد حذف هذا المصروف؟')) {
+                        Budget.deleteExpense(currentExpenseId);
+                        this.closeModal(modalId);
+                        this.renderAll();
+                    }
+                });
+                // store reference to set currentExpenseId when showing detail
+                this._expenseDetailDelete = (id) => { currentExpenseId = id; };
             },
 
             showExpenseDetail(expense) {
@@ -3779,7 +3822,9 @@
                 const content = Utils.id('expenseDetailContent');
                 const title = Utils.id('detailModalTitle');
                 title.textContent = 'تفاصيل المصروف: ' + (expense.description || expense.category);
-                Utils.id('deleteDetailBtn').dataset.id = expense.id;
+                const deleteBtn = Utils.id('deleteDetailBtn');
+                deleteBtn.dataset.id = expense.id;
+                this._expenseDetailDelete(expense.id);
                 const purchaseTypeLabels = { 'Essential': 'أساسي', 'Important': 'مهم', 'Optional': 'اختياري',
                     'Luxury': 'كمالي', 'Investment': 'استثمار' };
                 content.innerHTML = '<div class="expense-detail-grid"><div class="detail-item"><span class="label">المبلغ</span><span class="value">' +
@@ -3800,8 +3845,7 @@
                     (expense.description || '—') +
                     '</span></div><div class="detail-item" style="grid-column:1/-1;"><span class="label">ملاحظات</span><span class="value">' +
                     (expense.notes || '—') + '</span></div></div>';
-                modal.classList.add('open');
-                currentExpenseId = expense.id;
+                this.openModal('expenseDetailModal');
             },
 
             setupClearAllExpenses() {
@@ -3818,15 +3862,16 @@
             },
 
             setupExpenseModal() {
-                const modal = Utils.id('expenseModal');
+                const modalId = 'expenseModal';
+                this.setupModalClose(modalId, 'closeExpenseModal', 'cancelExpenseBtn');
+
                 const openBtn = Utils.id('addExpenseBtn');
-                const closeBtn = Utils.id('closeExpenseModal');
-                const cancelBtn = Utils.id('cancelExpenseBtn');
                 const saveBtn = Utils.id('saveExpenseBtn');
                 const parseBtn = Utils.id('parseExpenseBtn');
                 const aiInput = Utils.id('aiExpenseInput');
                 const parseResult = Utils.id('parseResult');
                 const tabs = Utils.qsa('.method-tab');
+
                 tabs.forEach(tab => {
                     Utils.on(tab, 'click', () => {
                         tabs.forEach(t => t.classList.remove('active'));
@@ -3838,19 +3883,16 @@
                         parseResult.innerHTML = '';
                     });
                 });
+
                 Utils.on(openBtn, 'click', () => {
-                    modal.classList.add('open');
+                    this.openModal(modalId);
                     Utils.id('manualDate').value = Utils.today();
                     this.populateCategorySelect(Utils.id('manualCategory'));
                     aiInput.value = '';
                     parseResult.innerHTML = '';
                     saveBtn.style.display = 'none';
                 });
-                const closeModal = () => { modal.classList.remove('open');
-                    parseResult.innerHTML = ''; };
-                Utils.on(closeBtn, 'click', closeModal);
-                Utils.on(cancelBtn, 'click', closeModal);
-                modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
+
                 let parsedData = null;
                 Utils.on(parseBtn, 'click', async () => {
                     const text = aiInput.value.trim();
@@ -3894,7 +3936,7 @@
                                 notes: ''
                             };
                             Budget.addExpense(expenseData);
-                            closeModal();
+                            this.closeModal(modalId);
                             this.renderAll();
                             alert('تم حفظ المصروف بنجاح!');
                         });
@@ -3903,6 +3945,7 @@
                             '<div class="parse-review" style="color:var(--danger);">' + err.message +
                         '</div>'; }
                 });
+
                 Utils.on(saveBtn, 'click', () => {
                     const amount = parseFloat(Utils.id('manualAmount').value);
                     if (!amount || amount <= 0) { alert('الرجاء إدخال مبلغ صحيح'); return; }
@@ -3913,7 +3956,7 @@
                         merchant: Utils.id('manualMerchant').value || '', notes: Utils.id('manualNotes')
                             .value || '' };
                     Budget.addExpense(data);
-                    closeModal();
+                    this.closeModal(modalId);
                     this.renderAll();
                 });
             },
@@ -3926,7 +3969,7 @@
 
             openQuickExpenseModal(type) {
                 this.quickExpenseTarget = type;
-                const modal = Utils.id('quickExpenseModal');
+                const modalId = 'quickExpenseModal';
                 const title = Utils.id('quickExpenseModalTitle');
                 const catSelect = Utils.id('quickCategory');
                 const cats = type === 'travel' ? Utils.travelCategories() : Utils.tempCategories();
@@ -3935,18 +3978,14 @@
                 Utils.id('quickAmount').value = '';
                 Utils.id('quickDescription').value = '';
                 Utils.id('quickDate').value = Utils.today();
-                modal.classList.add('open');
+                this.openModal(modalId);
             },
 
             setupQuickExpenseModal() {
-                const modal = Utils.id('quickExpenseModal');
-                const closeBtn = Utils.id('closeQuickExpenseModal');
-                const cancelBtn = Utils.id('cancelQuickExpenseBtn');
+                const modalId = 'quickExpenseModal';
+                this.setupModalClose(modalId, 'closeQuickExpenseModal', 'cancelQuickExpenseBtn');
+
                 const saveBtn = Utils.id('saveQuickExpenseBtn');
-                const closeModal = () => modal.classList.remove('open');
-                Utils.on(closeBtn, 'click', closeModal);
-                Utils.on(cancelBtn, 'click', closeModal);
-                modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
                 Utils.on(saveBtn, 'click', () => {
                     const amount = parseFloat(Utils.id('quickAmount').value);
                     if (!amount || amount <= 0) { alert('الرجاء إدخال مبلغ صحيح'); return; }
@@ -3957,7 +3996,7 @@
                         this.renderTravel(); } else if (this.quickExpenseTarget === 'temp') { Budget
                             .addTempExpense(data);
                         this.renderTemp(); }
-                    closeModal();
+                    this.closeModal(modalId);
                     this.renderAll();
                 });
             },
@@ -4097,11 +4136,11 @@
             },
 
             setupSetupWizard() {
-                const modal = Utils.id('setupModal');
+                const modalId = 'setupModal';
                 const form = Utils.id('setupForm');
                 const container = Utils.id('setupCategoriesContainer');
-                if (!Storage.isFirstLaunch()) { modal.classList.remove('open'); return; }
-                modal.classList.add('open');
+                if (!Storage.isFirstLaunch()) { this.closeModal(modalId); return; }
+                this.openModal(modalId);
                 const cats = Utils.defaultCategories();
                 const defaultReserved = { 'الإيجار': true, 'الأقساط': true };
                 container.innerHTML = cats.map(cat =>
@@ -4121,7 +4160,6 @@
                     const goal = parseFloat(Utils.id('setupSavingsGoal').value);
                     if (!salary || salary <= 0) { alert('الرجاء إدخال راتب صحيح'); return; }
                     if (!date) { alert('الرجاء اختيار تاريخ نزول الراتب'); return; }
-                    // إنشاء بنود ميزانية من المدخلات
                     const inputs = Utils.qsa('.setup-cat-budget');
                     const items = [];
                     inputs.forEach(inp => {
@@ -4147,16 +4185,16 @@
                     const settings = { salary, salaryDate: date, savingsGoal: goal || 0 };
                     Storage.setSettings(settings);
                     Storage.markLaunched();
-                    modal.classList.remove('open');
+                    this.closeModal(modalId);
                     FinancialEngine.refreshAll();
                     alert('تم إعداد الميزانية بنجاح!');
                 });
             },
 
             setupGeminiModal() {
-                const modal = Utils.id('geminiModal');
+                const modalId = 'geminiModal';
+                this.setupModalClose(modalId, 'closeGeminiModal');
                 const trigger = Utils.id('geminiSecretTrigger');
-                const closeBtn = Utils.id('closeGeminiModal');
                 const form = Utils.id('geminiSettingsForm');
                 const keyInput = Utils.id('geminiKeyInput');
                 const addBtn = Utils.id('addKeyBtn');
@@ -4211,14 +4249,12 @@
                 };
 
                 Utils.on(trigger, 'click', () => {
-                    modal.classList.add('open');
+                    this.openModal(modalId);
                     const savedModel = Storage.getGeminiModel();
                     modelSelect.value = savedModel || 'gemini-2.5-pro';
                     renderKeys();
                     updateStatus();
                 });
-                Utils.on(closeBtn, 'click', () => { modal.classList.remove('open'); });
-                modal.addEventListener('click', (e) => { if (e.target === modal) modal.classList.remove('open'); });
 
                 Utils.on(addBtn, 'click', () => {
                     const key = keyInput.value.trim();
@@ -4252,7 +4288,7 @@
                     status.textContent = '✅ تم حفظ الإعدادات بنجاح. (' + keys.length + ' مفاتيح، النموذج: ' +
                         model + ')';
                     renderKeys();
-                    setTimeout(() => modal.classList.remove('open'), 1200);
+                    setTimeout(() => this.closeModal(modalId), 1200);
                 });
                 Utils.on(keyInput, 'keydown', (e) => { if (e.key === 'Enter') { e.preventDefault();
                         addBtn.click(); } });
@@ -4425,7 +4461,6 @@
                     list.innerHTML = '<div class="empty-state glass"><i class="fas fa-list-ul"></i><p>لا توجد بنود ميزانية. أضف بنداً جديداً.</p></div>';
                     return;
                 }
-                // تحديث المصروفات
                 FinancialEngine.syncBudgetItemsSpent();
                 const updatedItems = FinancialEngine.getBudgetItems();
                 list.innerHTML = updatedItems.map(item => {
@@ -4453,7 +4488,6 @@
                     </div>`;
                 }).join('');
 
-                // Add event listeners
                 Utils.qsa('.edit-item-btn').forEach(btn => {
                     Utils.on(btn, 'click', (e) => {
                         e.stopPropagation();
@@ -4471,7 +4505,6 @@
                         }
                     });
                 });
-                // Click on card to edit
                 Utils.qsa('.budget-item-card').forEach(card => {
                     Utils.on(card, 'click', (e) => {
                         if (e.target.closest('button')) return;
@@ -4485,16 +4518,10 @@
                 const addBtn = Utils.id('addBudgetItemBtn');
                 Utils.on(addBtn, 'click', () => this.openBudgetItemModal(null));
 
-                const modal = Utils.id('budgetItemModal');
-                const closeBtn = Utils.id('closeBudgetItemModal');
-                const cancelBtn = Utils.id('cancelBudgetItemBtn');
+                const modalId = 'budgetItemModal';
+                this.setupModalClose(modalId, 'closeBudgetItemModal', 'cancelBudgetItemBtn');
+
                 const form = Utils.id('budgetItemForm');
-
-                const closeModal = () => modal.classList.remove('open');
-                Utils.on(closeBtn, 'click', closeModal);
-                Utils.on(cancelBtn, 'click', closeModal);
-                modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
-
                 Utils.on(form, 'submit', (e) => {
                     e.preventDefault();
                     const name = Utils.id('budgetItemName').value.trim();
@@ -4506,25 +4533,22 @@
                     if (!name) { alert('الرجاء إدخال اسم البند'); return; }
                     const id = form.dataset.editId;
                     if (id) {
-                        // Edit
                         FinancialEngine.updateBudgetItem(id, { name, category, budget, priority, notes,
                             isReserved });
                     } else {
-                        // Add
                         FinancialEngine.addBudgetItem({ name, category, budget, priority, notes, isReserved });
                     }
-                    closeModal();
+                    this.closeModal(modalId);
                     this.renderBudgetItems();
                     this.renderDashboard();
                 });
             },
 
             openBudgetItemModal(id) {
-                const modal = Utils.id('budgetItemModal');
+                const modalId = 'budgetItemModal';
                 const form = Utils.id('budgetItemForm');
                 const title = Utils.id('budgetItemModalTitle');
                 const catSelect = Utils.id('budgetItemCategory');
-                // Populate categories
                 const cats = Utils.defaultCategories();
                 catSelect.innerHTML = cats.map(c => `<option value="${c}">${c}</option>`).join('');
 
@@ -4549,7 +4573,7 @@
                     Utils.id('budgetItemReserved').checked = false;
                     form.dataset.editId = '';
                 }
-                modal.classList.add('open');
+                this.openModal(modalId);
             },
 
             renderTravel() {
