@@ -565,6 +565,13 @@
         .expense-actions .delete-btn:hover {
             color: var(--danger)
         }
+        .expense-actions .reserved-toggle-btn {
+            color: var(--warning);
+            font-size: 1.2rem;
+        }
+        .expense-actions .reserved-toggle-btn:hover {
+            color: var(--accent);
+        }
         .empty-state {
             text-align: center;
             padding: 40px 20px;
@@ -661,6 +668,13 @@
             font-weight: 600;
             font-size: 0.85rem;
             color: var(--text-secondary)
+        }
+        .form-group label.checkbox-label {
+            flex-direction: row;
+            align-items: center;
+            gap: 8px;
+            font-weight: normal;
+            cursor: pointer;
         }
         .form-input,
         .form-textarea {
@@ -1533,6 +1547,15 @@
             border-top: 1px solid var(--bg-glass-border);
             margin-top: 8px
         }
+        .reserved-badge {
+            background: var(--warning);
+            color: #fff;
+            font-size: 0.65rem;
+            padding: 2px 8px;
+            border-radius: 20px;
+            display: inline-block;
+            margin-right: 6px;
+        }
         @media(max-width:768px) {
             .chat-message.financial-advisor {
                 max-width: 95%;
@@ -1713,7 +1736,7 @@
                         <button class="method-tab" data-method="manual">إدخال يدوي</button>
                     </div>
                     <div id="aiMethod" class="method-panel">
-                        <div class="form-group"><label>أرسل رسالة البنك أو اكتب وصفاً</label><textarea id="aiExpenseInput" class="form-textarea" rows="3" placeholder="مثال: اشتريت قهوة بـ18 ريال"></textarea></div>
+                        <div class="form-group"><label>أرسل رسالة البنك أو اكتب وصفاً</label><textarea id="aiExpenseInput" class="form-textarea" rows="3" placeholder="مثال: اشتريت قهوة بـ18 ريال (محجوز)"></textarea></div>
                         <button id="parseExpenseBtn" class="btn-primary"><i class="fas fa-robot"></i> تحليل بالذكاء</button>
                         <div id="parseResult" class="parse-result"></div>
                     </div>
@@ -1723,6 +1746,11 @@
                         <div class="form-row"><div class="form-group"><label>التصنيف</label><select id="manualCategory" class="form-input"></select></div><div class="form-group"><label>التصنيف الفرعي</label><input type="text" id="manualSubCategory" class="form-input" placeholder="اختياري" /></div></div>
                         <div class="form-row"><div class="form-group"><label>طريقة الدفع</label><input type="text" id="manualPaymentMethod" class="form-input" placeholder="مثال: فيزا, نقدي" /></div><div class="form-group"><label>اسم التاجر</label><input type="text" id="manualMerchant" class="form-input" placeholder="اسم المتجر" /></div></div>
                         <div class="form-group"><label>ملاحظات</label><textarea id="manualNotes" class="form-textarea" rows="2" placeholder="ملاحظات إضافية"></textarea></div>
+                        <div class="form-group">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="manualReserved" /> محجوز (لا يمكن صرفه)
+                            </label>
+                        </div>
                     </div>
                 </div>
                 <div class="modal-actions">
@@ -1750,7 +1778,11 @@
             <div class="modal-header"><h2 id="detailModalTitle">تفاصيل المصروف</h2><button class="modal-close" id="closeDetailModal">&times;</button></div>
             <div class="modal-body">
                 <div id="expenseDetailContent"></div>
-                <div class="modal-actions"><button class="btn-secondary" id="closeDetailBtn">إغلاق</button><button class="btn-danger" id="deleteDetailBtn"><i class="fas fa-trash"></i> حذف</button></div>
+                <div class="modal-actions">
+                    <button class="btn-secondary" id="closeDetailBtn">إغلاق</button>
+                    <button class="btn-danger" id="deleteDetailBtn"><i class="fas fa-trash"></i> حذف</button>
+                    <button class="btn-primary" id="toggleReservedDetailBtn"><i class="fas fa-lock"></i> تبديل الحجز</button>
+                </div>
             </div>
         </div>
     </div>
@@ -1929,7 +1961,7 @@
         };
 
         // ============================================================
-        // 4. BUDGET (core CRUD)
+        // 4. BUDGET (core CRUD) - UPDATED with Reserved
         // ============================================================
         const Budget = {
             getExpenses() { return Storage.getExpenses(); },
@@ -1953,7 +1985,8 @@
                     isInstallment: data.isInstallment || false,
                     isSubscription: data.isSubscription || false,
                     tags: data.tags || [],
-                    location: data.location || ''
+                    location: data.location || '',
+                    isReserved: data.isReserved || false    // <-- NEW
                 };
                 exp.push(entry);
                 this.saveExpenses(exp);
@@ -1978,6 +2011,71 @@
             getTodayExpenses() { const d = Utils.today(); return this.getExpenses().filter(e => e.date === d); },
             getWeekExpenses() { const w = Utils.getWeekRange(); return this.getExpensesByDateRange(w.start, w.end); },
             getMonthExpenses() { const m = Utils.getMonthRange(); return this.getExpensesByDateRange(m.start, m.end); },
+
+            // ---- NEW Reserved methods ----
+            getReservedTotal(expenses) {
+                return expenses.filter(e => e.isReserved).reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0);
+            },
+            getPaidTotal(expenses) {
+                return expenses.filter(e => !e.isReserved).reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0);
+            },
+            getAvailableBudget(expenses, settings) {
+                const salary = parseFloat(settings.salary) || 0;
+                return salary - this.getReservedTotal(expenses);
+            },
+            // Remaining = Total Income - Total Expenses (including reserved)
+            getRemaining(expenses, settings) {
+                const salary = parseFloat(settings.salary) || 0;
+                return salary - this.getTotal(expenses);
+            },
+            getDailyBudget(expenses, settings) {
+                const days = this.getDaysUntilSalary();
+                if (days > 0) {
+                    const available = this.getAvailableBudget(expenses, settings);
+                    return available / days;
+                }
+                return 0;
+            },
+            getWeeklyBudget(expenses, settings) {
+                const days = this.getDaysUntilSalary();
+                if (days > 0) {
+                    const available = this.getAvailableBudget(expenses, settings);
+                    return available / (days / 7);
+                }
+                return 0;
+            },
+            getDaysUntilSalary() {
+                const next = this.getNextSalaryDate();
+                if (!next) return null;
+                const now = WorldTime.now();
+                const today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+                return Math.round((next - today0) / 86400000);
+            },
+            getNextSalaryDate() {
+                const settings = Storage.getSettings();
+                if (!settings.salaryDate) return null;
+                const base = new Date(settings.salaryDate);
+                if (isNaN(base.getTime())) return null;
+                const day = base.getDate();
+                const now = WorldTime.now();
+                const today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+                let candidate = new Date(now.getFullYear(), now.getMonth(), day);
+                if (candidate < today0) {
+                    candidate = new Date(now.getFullYear(), now.getMonth() + 1, day);
+                }
+                return candidate;
+            },
+            // Toggle reserved status
+            toggleReserved(id) {
+                const expenses = this.getExpenses();
+                const idx = expenses.findIndex(e => e.id === id);
+                if (idx === -1) return;
+                expenses[idx].isReserved = !expenses[idx].isReserved;
+                this.saveExpenses(expenses);
+                this.refreshUI();
+            },
+
+            // ---- existing methods (unchanged) ----
             getTotal(expenses) { return expenses.reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0); },
             getByCategory(expenses) { const map = {};
                 expenses.forEach(e => { const cat = e.category || 'أخرى';
@@ -1987,21 +2085,9 @@
             getMonthlyTotals(expenses) { const map = {};
                 expenses.forEach(e => { const m = e.date.substring(0, 7);
                     map[m] = (map[m] || 0) + (parseFloat(e.amount) || 0); }); return map; },
-            getRemaining(expenses) { const settings = Storage.getSettings(); const total = this.getTotal(expenses); return (
+            // kept for backward compatibility (use getRemaining with expenses)
+            getRemainingLegacy(expenses) { const settings = Storage.getSettings(); const total = this.getTotal(expenses); return (
                     parseFloat(settings.salary) || 0) - total; },
-            getDailyBudget() { const settings = Storage.getSettings(); const salary = parseFloat(settings.salary) || 0; const nowRef = (
-                    typeof WorldTime !== 'undefined' ? WorldTime.now() : new Date()); const daysInMonth = new Date(nowRef
-                    .getFullYear(), nowRef.getMonth() + 1, 0).getDate(); return daysInMonth > 0 ? salary / daysInMonth :
-                    0; },
-            getWeeklyBudget() { return this.getDailyBudget() * 7; },
-            getNextSalaryDate() { const settings = Storage.getSettings(); if (!settings.salaryDate) return null; const base =
-                    new Date(settings.salaryDate); if (isNaN(base.getTime())) return null; const day = base.getDate(); const now =
-                    WorldTime.now(); const today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()); let candidate =
-                    new Date(now.getFullYear(), now.getMonth(), day); if (candidate < today0) { candidate = new Date(now
-                        .getFullYear(), now.getMonth() + 1, day); } return candidate; },
-            getDaysUntilSalary() { const next = this.getNextSalaryDate(); if (!next) return null; const now = WorldTime.now();
-                const today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()); return Math.round((next -
-                    today0) / 86400000); },
             setDailyBudget(amount) { const settings = Storage.getSettings(); const daysInMonth = new Date(WorldTime.now()
                     .getFullYear(), WorldTime.now().getMonth() + 1, 0).getDate(); const newSalary = amount * daysInMonth;
                 settings.salary = parseFloat(newSalary) || 0;
@@ -2048,12 +2134,14 @@
         };
 
         // ============================================================
-        // 5. EXPENSE PARSER (same)
+        // 5. EXPENSE PARSER (same, but detect "محجوز")
         // ============================================================
         const ExpenseParser = {
             parse(text) {
                 const lines = text.split(/[\n\r]+/).filter(l => l.trim());
-                const result = { transactions: [], merchant: null, date: null };
+                const result = { transactions: [], merchant: null, date: null, isReserved: false };
+                // detect reserved keyword
+                if (/محجوز|مخصص|إلزامي/.test(text)) result.isReserved = true;
                 const merchantMatch = text.match(/^(?:من|في|عند|من عند|بنده|كارفور|تميم|دانوب|أسواق|سوق)\s*([^\d,،]+)/i);
                 if (merchantMatch) { result.merchant = merchantMatch[1].trim(); }
                 const dateMatch = text.match(/(\d{4}-\d{2}-\d{2})/);
@@ -2067,7 +2155,8 @@
                         const amount = parseFloat(match[2]);
                         if (!isNaN(amount) && amount > 0) {
                             result.transactions.push({ description: desc || 'مصروف', amount: amount,
-                                merchant: result.merchant || '', date: result.date || Utils.today() });
+                                merchant: result.merchant || '', date: result.date || Utils.today(),
+                                isReserved: result.isReserved });
                             continue;
                         }
                     }
@@ -2078,7 +2167,8 @@
                         const desc = match2[2].trim();
                         if (!isNaN(amount) && amount > 0) {
                             result.transactions.push({ description: desc || 'مصروف', amount: amount,
-                                merchant: result.merchant || '', date: result.date || Utils.today() });
+                                merchant: result.merchant || '', date: result.date || Utils.today(),
+                                isReserved: result.isReserved });
                             continue;
                         }
                     }
@@ -2089,7 +2179,8 @@
                         const amount = parseFloat(match3[2]);
                         if (!isNaN(amount) && amount > 0 && amount < 1000000) {
                             result.transactions.push({ description: desc || 'مصروف', amount: amount,
-                                merchant: result.merchant || '', date: result.date || Utils.today() });
+                                merchant: result.merchant || '', date: result.date || Utils.today(),
+                                isReserved: result.isReserved });
                             continue;
                         }
                     }
@@ -2098,7 +2189,8 @@
                         const desc = line.replace(/[\d.]+/g, '').trim();
                         if (desc && desc.length > 1) {
                             result.transactions.push({ description: desc, amount: numbers[0], merchant: result
-                                    .merchant || '', date: result.date || Utils.today() });
+                                    .merchant || '', date: result.date || Utils.today(), isReserved: result
+                                    .isReserved });
                         }
                     }
                 }
@@ -2107,7 +2199,7 @@
                     if (allNumbers.length === 1) {
                         result.transactions.push({ description: text.replace(/[\d.]+/g, '').trim() || 'مصروف',
                             amount: allNumbers[0], merchant: result.merchant || '', date: result.date || Utils
-                                .today() });
+                                .today(), isReserved: result.isReserved });
                     } else if (allNumbers.length > 1) {
                         const parts = text.split(/[,،\s]+/);
                         let currentDesc = '';
@@ -2118,7 +2210,7 @@
                                 if (currentAmount > 0 && currentDesc) {
                                     result.transactions.push({ description: currentDesc.trim(), amount: currentAmount,
                                         merchant: result.merchant || '', date: result.date || Utils
-                                        .today() });
+                                        .today(), isReserved: result.isReserved });
                                 }
                                 currentAmount = num;
                                 currentDesc = '';
@@ -2129,7 +2221,8 @@
                         }
                         if (currentAmount > 0 && currentDesc) {
                             result.transactions.push({ description: currentDesc.trim(), amount: currentAmount,
-                                merchant: result.merchant || '', date: result.date || Utils.today() });
+                                merchant: result.merchant || '', date: result.date || Utils.today(),
+                                isReserved: result.isReserved });
                         }
                     }
                 }
@@ -2166,30 +2259,27 @@
                     const items = result.transactions.map(t => t.description + ' (' + Utils.formatCurrency(t.amount) +
                         ')').join('، ');
                     return { merchant: result.merchant, date: result.date, total: total, items: result.transactions,
-                        summary: items, category: result.transactions[0]?.category || 'أخرى' };
+                        summary: items, category: result.transactions[0]?.category || 'أخرى', isReserved: result
+                            .isReserved };
                 }
                 return { merchant: result.merchant, date: result.date, total: result.transactions[0]?.amount || 0,
                     items: result.transactions, summary: result.transactions[0]?.description || '', category: result
-                        .transactions[0]?.category || 'أخرى' };
+                        .transactions[0]?.category || 'أخرى', isReserved: result.isReserved };
             }
         };
 
         // ============================================================
-        // 6. FINANCIAL PLANNING ENGINE (FPE) - NEW
+        // 6. FINANCIAL PLANNING ENGINE (FPE) - UPDATED to use Available Budget
         // ============================================================
         // مبادئ: لا تعتمد على قيم مطلقة، تعتمد على النسب والمؤشرات.
         // كل محرك مستقل، قابل للتوسع.
 
         class IncomeAnalyzer {
             static analyze(expenses, settings) {
-                // الدخل الثابت (الراتب الشهري)
                 const salary = parseFloat(settings.salary) || 0;
-                // الدخل المتغير يمكن إضافته لاحقاً عبر معاملات خاصة
-                // حالياً نعتبر الراتب هو المصدر الوحيد
                 const recurringIncome = salary;
                 const variableIncome = 0;
                 const totalIncome = recurringIncome + variableIncome;
-                // استقرار الدخل: بناءً على وجود راتب ثابت
                 const stability = salary > 0 ? 'high' : 'low';
                 return {
                     totalIncome,
@@ -2220,7 +2310,6 @@
                     subscriptions = 0,
                     other = 0;
 
-                // تصنيف ديناميكي حسب التصنيفات
                 const fixedKeywords = ['إيجار', 'أقساط', 'قسط'];
                 const billsKeywords = ['كهرباء', 'ماء', 'إنترنت', 'فواتير'];
                 const savingsKeywords = ['ادخار', 'استثمار'];
@@ -2236,10 +2325,9 @@
                     else if (subscriptionsKeywords.some(k => catLower.includes(k))) subscriptions += amount;
                     else if (catLower.includes('استثمار')) investments += amount;
                     else if (catLower.includes('دين')) debt += amount;
-                    else variable += amount; // الباقي متغير
+                    else variable += amount;
                 }
 
-                // إعادة توزيع: لو مافيه تصنيفات محددة، نعتبر كل المصروفات متغيرة
                 if (fixed + bills + savings + investments + loans + debt + subscriptions === 0 && variable === 0) {
                     variable = total;
                 }
@@ -2264,11 +2352,18 @@
             static calculate(incomeResult, commitmentResult, expenses, settings) {
                 const totalIncome = incomeResult.totalIncome || 0;
                 const totalExpenses = commitmentResult.totalCommitments || 0;
-                const remaining = totalIncome - totalExpenses;
-                const salary = totalIncome; // الراتب هو الدخل
+                const salary = totalIncome;
                 const savingsGoal = parseFloat(settings.savingsGoal) || 0;
                 const monthExp = expenses || Budget.getMonthExpenses();
                 const daysInMonth = new Date(WorldTime.now().getFullYear(), WorldTime.now().getMonth() + 1, 0).getDate();
+
+                // NEW: use Budget's methods
+                const reserved = Budget.getReservedTotal(monthExp);
+                const paid = Budget.getPaidTotal(monthExp);
+                const availableBudget = Budget.getAvailableBudget(monthExp, settings);
+                const remaining = Budget.getRemaining(monthExp, settings);
+                const dailyBudget = Budget.getDailyBudget(monthExp, settings);
+                const weeklyBudget = Budget.getWeeklyBudget(monthExp, settings);
 
                 // النسب الأساسية
                 const savingsRate = totalIncome > 0 ? Math.max(0, (remaining / totalIncome) * 100) : 0;
@@ -2279,46 +2374,33 @@
                 const billsRatio = commitmentResult.weights.billsRatio || 0;
                 const commitmentRatio = totalIncome > 0 ? (totalExpenses / totalIncome) * 100 : 0;
 
-                const dailyBudget = daysInMonth > 0 ? totalIncome / daysInMonth : 0;
-                const weeklyBudget = dailyBudget * 7;
-                const monthlyBudget = totalIncome;
-                const cashFlow = remaining;
-                const disposableIncome = totalIncome - (commitmentResult.commitments.fixed || 0) - (commitmentResult
-                    .commitments.bills || 0) - (commitmentResult.commitments.loans || 0) - (commitmentResult.commitments
-                    .debt || 0);
-
-                // هامش الطوارئ (بافتراض أن الأساسيات = fixed + bills)
+                // cashFlow = disposable income after essentials and debt?
                 const essentials = (commitmentResult.commitments.fixed || 0) + (commitmentResult.commitments.bills || 0);
+                const disposableIncome = totalIncome - essentials - (commitmentResult.commitments.loans || 0) - (commitmentResult
+                    .commitments.debt || 0);
                 const emergencyMargin = essentials > 0 ? (remaining / essentials) : 0;
-
-                // المرونة المالية = الدخل المتاح / الدخل
                 const flexibilityScore = totalIncome > 0 ? Math.min(100, (disposableIncome / totalIncome) * 100) : 0;
 
-                // توزيع المصروفات
+                // expense distribution
                 const catMap = Budget.getByCategory(monthExp);
                 const expenseDistribution = Object.entries(catMap).map(([cat, amt]) => ({ category: cat, amount: amt,
                     percent: totalExpenses > 0 ? (amt / totalExpenses) * 100 : 0 }));
 
-                // استخدام الميزانيات
+                // budget utilization
                 const catBudgets = settings.categoryBudgets || {};
                 const budgetUtilization = Object.entries(catBudgets).map(([cat, budget]) => {
                     const spent = catMap[cat] || 0;
                     return { category: cat, budget, spent, percent: budget > 0 ? (spent / budget) * 100 : 0 };
                 });
 
-                // التقدم نحو الهدف
                 const goalProgress = savingsGoal > 0 ? Math.min(100, (remaining / savingsGoal) * 100) : 0;
 
-                // المتوسطات
                 const daysPassed = new Date(WorldTime.now().getDate());
                 const avgDaily = daysPassed > 0 ? totalExpenses / daysPassed : 0;
                 const avgWeekly = avgDaily * 7;
-
-                // التوقع البسيط
                 const projectedEnd = totalExpenses + (avgDaily * (daysInMonth - daysPassed));
                 const expectedSavings = totalIncome - projectedEnd;
 
-                // درجة الضغط المالي (عكسي للصحة)
                 const stressComponents = [
                     (savingsRate < 10) ? 1 : 0,
                     (debtRatio > 30) ? 1 : 0,
@@ -2328,13 +2410,11 @@
                 const stressSum = stressComponents.reduce((a, b) => a + b, 0);
                 const financialStressIndex = Math.min(100, (stressSum / 4) * 100);
 
-                // درجة الصحة المالية (0-100)
                 const healthScore = Math.max(0, Math.min(100,
                     40 + (savingsRate * 0.3) + (flexibilityScore * 0.2) + (goalProgress * 0.1) - (debtRatio * 0.2) - (
                         financialStressIndex * 0.1)
                 ));
 
-                // مستوى المخاطرة
                 let riskLevel = 'low';
                 if (healthScore < 30) riskLevel = 'very high';
                 else if (healthScore < 50) riskLevel = 'high';
@@ -2347,10 +2427,12 @@
                     lifestyleRatio: Math.round(lifestyleRatio * 10) / 10,
                     billsRatio: Math.round(billsRatio * 10) / 10,
                     commitmentRatio: Math.round(commitmentRatio * 10) / 10,
-                    remainingBudget: remaining,
+                    remainingBudget: remaining,                   // updated
+                    availableBudget: availableBudget,             // NEW
+                    reservedMoney: reserved,                       // NEW
                     dailyBudget: Math.round(dailyBudget * 100) / 100,
                     weeklyBudget: Math.round(weeklyBudget * 100) / 100,
-                    monthlyBudget: monthlyBudget,
+                    monthlyBudget: totalIncome,
                     cashFlow: cashFlow,
                     emergencyMargin: Math.round(emergencyMargin * 10) / 10,
                     financialFlexibility: Math.round(flexibilityScore * 10) / 10,
@@ -2386,7 +2468,6 @@
                     if (hour >= 22 || hour < 6) night += e.amount;
                     else if (hour >= 6 && hour < 12) morning += e.amount;
                     if (day === 5 || day === 6) weekend += e.amount;
-                    // اندفاعي: كمالي + مبلغ كبير
                     if (e.purchaseType === 'Luxury' && e.amount > 100) impulse += e.amount;
                     if (e.merchant) merchants[e.merchant] = (merchants[e.merchant] || 0) + e.amount;
                     if (e.category) categories[e.category] = (categories[e.category] || 0) + e.amount;
@@ -2399,7 +2480,6 @@
                 const lifestyleRatio = metrics.lifestyleRatio || 0;
                 const stress = metrics.financialStressIndex || 0;
 
-                // تصنيف الملف الشخصي
                 let profile = 'Balanced';
                 if (savingsRate > 30 && stress < 30) profile = 'AggressiveSaver';
                 else if (savingsRate > 15) profile = 'Saver';
@@ -2419,7 +2499,7 @@
                     impulseSpending: impulse,
                     topMerchants,
                     topCategories,
-                    recurringPatterns: [] // يمكن تحسينه لاحقاً
+                    recurringPatterns: []
                 };
             }
         }
@@ -2435,8 +2515,8 @@
                 const projectedTotal = total + (avgDaily * daysLeft);
                 const salary = parseFloat(settings.salary) || 0;
                 const projectedBalance = salary - projectedTotal;
+                const available = metrics.availableBudget || (salary - Budget.getReservedTotal(monthExp));
 
-                // الفئات المعرضة للخطر
                 const catMap = Budget.getByCategory(monthExp);
                 const catBudgets = settings.categoryBudgets || {};
                 const atRisk = [];
@@ -2452,7 +2532,11 @@
                     }
                 }
 
-                const dailyAllowance = daysLeft > 0 ? (salary - total) / daysLeft : 0;
+                const dailyAllowance = daysLeft > 0 ? (available - (total - Budget.getReservedTotal(monthExp))) / daysLeft : 0;
+                // dailyAllowance = remaining / daysLeft, but remaining = available - paid
+                const remaining = metrics.remainingBudget || (salary - total);
+                const dailyAllowance2 = daysLeft > 0 ? remaining / daysLeft : 0;
+
                 const canMeetGoal = settings.savingsGoal > 0 ? (projectedBalance >= settings.savingsGoal) : true;
                 const willDeficit = projectedBalance < 0;
                 const daysUntilRunOut = (avgDaily > 0 && salary > 0) ? Math.floor(salary / avgDaily) : null;
@@ -2464,7 +2548,7 @@
                     projectedSurplus: Math.max(0, Math.round(projectedBalance * 100) / 100),
                     atRiskCategories: atRisk,
                     daysRemaining: daysLeft,
-                    dailyAllowance: Math.round(dailyAllowance * 100) / 100,
+                    dailyAllowance: Math.round(dailyAllowance2 * 100) / 100,
                     canMeetSavingsGoal: canMeetGoal,
                     willEndWithDeficit: willDeficit,
                     daysUntilRunOut: daysUntilRunOut
@@ -2478,7 +2562,6 @@
                 const salary = parseFloat(settings.salary) || 0;
                 const currentSavings = metrics.remainingBudget || 0;
 
-                // سيناريو خفض المطاعم 20%
                 const restBudget = settings.categoryBudgets?.['المطاعم'] || 0;
                 if (restBudget > 0) {
                     const saving = restBudget * 0.2;
@@ -2496,7 +2579,6 @@
                     });
                 }
 
-                // سيناريو خفض الترفيه 30%
                 const entertainmentBudget = settings.categoryBudgets?.['الترفيه'] || 0;
                 if (entertainmentBudget > 0) {
                     const saving = entertainmentBudget * 0.3;
@@ -2514,7 +2596,6 @@
                     });
                 }
 
-                // سيناريو زيادة الادخار
                 if (metrics.savingsRate < 15) {
                     const targetSaving = salary * 0.15;
                     const additional = targetSaving - (salary * metrics.savingsRate / 100);
@@ -2550,7 +2631,6 @@
                     return { category: cat, priority };
                 });
 
-                // ترتيب التوصيات حسب الأولوية
                 const recPriorities = recommendations.map(rec => {
                     let priority = 'low';
                     if (rec.expectedSavings > 200) priority = 'high';
@@ -2581,7 +2661,6 @@
                     });
                 };
 
-                // إذا كان المتبقي سالباً
                 if (metrics.remainingBudget < 0) {
                     addRec('خفض الإنفاق', 'وقف الإنفاق غير الضروري',
                         'أنت تنفق أكثر من راتبك. أوقف جميع المشتريات الكمالية فوراً.',
@@ -2589,7 +2668,6 @@
                         'immediate');
                 }
 
-                // إذا كانت نسبة الادخار منخفضة
                 if (metrics.savingsRate < 10 && metrics.remainingBudget > 0) {
                     const targetSave = metrics.remainingBudget * 0.3;
                     addRec('الادخار', 'زيادة الادخار',
@@ -2598,7 +2676,6 @@
                         targetSave, 80, 'medium', 'short');
                 }
 
-                // تصنيفات مهددة
                 const atRisk = forecast.atRiskCategories || [];
                 atRisk.forEach(risk => {
                     if (risk.overshoot > 0) {
@@ -2609,7 +2686,6 @@
                     }
                 });
 
-                // سلوك اندفاعي
                 if (behavior.impulseSpending > metrics.averageDailySpending * 3) {
                     addRec('الإنفاق الاندفاعي', 'التحكم في المشتريات الاندفاعية',
                         `أنفقت ${Utils.formatCurrency(behavior.impulseSpending)} على مشتريات اندفاعية.`,
@@ -2617,7 +2693,6 @@
                         'short');
                 }
 
-                // إذا لم تكن هناك توصيات، نضيف توصية عامة
                 if (recs.length === 0) {
                     addRec('تحسين عام', 'استمرار الأداء الجيد',
                         'أداؤك المالي ممتاز. استمر في الحفاظ على هذا المستوى.',
@@ -2665,6 +2740,8 @@
                         billsRatio: metrics.billsRatio,
                         commitmentRatio: metrics.commitmentRatio,
                         remainingBudget: metrics.remainingBudget,
+                        availableBudget: metrics.availableBudget,
+                        reservedMoney: metrics.reservedMoney,
                         dailyBudget: metrics.dailyBudget,
                         weeklyBudget: metrics.weeklyBudget,
                         monthlyBudget: metrics.monthlyBudget,
@@ -2722,24 +2799,15 @@
         // ============================================================
         const FPE = {
             run(expenses, settings) {
-                // 1. Income
                 const income = IncomeAnalyzer.analyze(expenses, settings);
-                // 2. Commitment
                 const commitment = CommitmentAnalyzer.analyze(expenses, settings);
-                // 3. Metrics
                 const metrics = MetricsEngine.calculate(income, commitment, expenses, settings);
-                // 4. Behavior
                 const behavior = BehaviorAnalyzer.analyze(expenses, metrics);
-                // 5. Forecast
                 const forecast = ForecastEngine.forecast(expenses, metrics, settings);
-                // 6. Scenario
                 const scenario = ScenarioEngine.generate(metrics, forecast, settings);
-                // 7. Recommendation (يحتاج إلى الأولويات، لكن الأولويات تعتمد على التوصيات، لذا نمرر فارغاً مؤقتاً)
                 const recommendations = RecommendationEngine.generate(metrics, behavior, forecast, {});
-                // 8. Priority
                 const categories = Storage.getCategories();
                 const priorities = PriorityEngine.prioritize(categories, commitment, recommendations.recommendations);
-                // 9. Build Context
                 const context = FinancialContextBuilder.build(
                     income, commitment, metrics, behavior, forecast, scenario, recommendations, priorities
                 );
@@ -2748,7 +2816,7 @@
         };
 
         // ============================================================
-        // 8. GEMINI ADAPTER (UPDATED)
+        // 8. GEMINI ADAPTER (UPDATED with reserved concept in prompt)
         // ============================================================
         const Gemini = {
             getKeys() { return Storage.getGeminiKeys(); },
@@ -2804,9 +2872,7 @@
                 }
             },
 
-            // البرومبت الجديد: يعتمد فقط على السياق الجاهز
             async thinkAndDecide(query, context) {
-                // context هو FinancialContext الكامل
                 const contextStr = JSON.stringify(context, null, 2);
 
                 const prompt = `أنت مستشار مالي شخصي خبير. أنت هنا لشرح البيانات المالية، وتقديم نصائح، والإجابة عن الأسئلة.
@@ -2817,6 +2883,8 @@
 - ركز على التفسير، النصائح القابلة للتنفيذ، والإجابة على السؤال.
 - إذا طلب المستخدم حلاً، قدم خطوات عملية باستخدام الأرقام من السياق.
 - إذا طلب المستخدم إجراءً (إضافة، حذف، تعديل)، أرفق كتلة json-actions في نهاية الرد.
+
+**معلومة مهمة:** الأموال المحجوزة (isReserved) هي مبالغ مخصصة لا يمكن صرفها (مثل الإيجار والأقساط). الميزانية المتاحة = الدخل - المحجوز. المتبقي = الدخل - إجمالي المصروفات (بما فيها المحجوز).
 
 **السياق المالي الكامل (جاهز 100%):**
 \`\`\`json
@@ -2840,6 +2908,8 @@ ${contextStr}
                 const health = context.metrics?.healthScore || 0;
                 const daily = context.metrics?.dailyBudget || 0;
                 const profile = context.userProfile || 'Balanced';
+                const available = context.metrics?.availableBudget || 0;
+                const reserved = context.metrics?.reservedMoney || 0;
 
                 if (/حل|ساعدني|وش أسوي/.test(query.toLowerCase())) {
                     let response = `📋 **خلاصة المشكلة**\n`;
@@ -2858,7 +2928,7 @@ ${contextStr}
                     return response;
                 }
 
-                return `📊 بناءً على بياناتك:\nالمتبقي: ${Utils.formatCurrency(remaining)}\nالصحة المالية: ${health}/100\nالميزانية اليومية: ${Utils.formatCurrency(daily)}\nالملف الشخصي: ${profile}\n\n💡 نصيحة: ${remaining > 0 ? 'يمكنك الاستمرار في إنفاقك الحالي بحذر.' : 'تحتاج إلى تقليل الإنفاق بشكل عاجل.'}`;
+                return `📊 بناءً على بياناتك:\nالمتبقي: ${Utils.formatCurrency(remaining)}\nالميزانية المتاحة: ${Utils.formatCurrency(available)}\nالأموال المحجوزة: ${Utils.formatCurrency(reserved)}\nالصحة المالية: ${health}/100\nالميزانية اليومية: ${Utils.formatCurrency(daily)}\nالملف الشخصي: ${profile}\n\n💡 نصيحة: ${remaining > 0 ? 'يمكنك الاستمرار في إنفاقك الحالي بحذر.' : 'تحتاج إلى تقليل الإنفاق بشكل عاجل.'}`;
             },
 
             async parseExpense(text) {
@@ -2867,8 +2937,11 @@ ${contextStr}
                 if (result.transactions.length === 1) return result.transactions[0];
                 const total = result.transactions.reduce((s, t) => s + t.amount, 0);
                 const desc = result.transactions.map(t => t.description).join(' + ');
+                // inherit isReserved from first transaction (or from detection)
+                const isReserved = result.transactions.some(t => t.isReserved);
                 return { amount: total, description: desc || 'مصروفات متعددة', category: result.transactions[0]
-                        ?.category || 'أخرى', merchant: result.merchant || '', date: result.date || Utils.today() };
+                        ?.category || 'أخرى', merchant: result.merchant || '', date: result.date || Utils.today(),
+                    isReserved: isReserved };
             },
 
             async runAdvancedAnalytics(expenses, settings) {
@@ -2887,7 +2960,7 @@ ${JSON.stringify(context, null, 2)}
 أجب بشكل مختصر ومفيد، باللغة العربية الفصحى.`;
 
                 try { return await this.sendRequest(prompt); } catch (e) { return this.generateFallback('تحليل شامل',
-                    context); }
+                        context); }
             },
 
             async answerQuickQuestion(question, expenses, settings) {
@@ -2902,7 +2975,6 @@ ${JSON.stringify(context, null, 2)}
 أجب باللغة العربية الفصحى.`;
 
                 try { return await this.sendRequest(prompt); } catch (e) {
-                    // رد احتياطي سريع
                     const remaining = context.metrics?.remainingBudget || 0;
                     const daily = context.metrics?.dailyBudget || 0;
                     if (question.includes('كم أستطيع أن أصرف اليوم')) {
@@ -2948,9 +3020,9 @@ ${JSON.stringify(context, null, 2)}
                             case 'add_expense': { const e = Budget.addExpense({ amount: a.amount,
                                     description: a.description || a.desc || 'مصروف', category: a.category ||
                                     'أخرى', date: a.date || Utils.today(), merchant: a.merchant || '',
-                                    notes: a.notes || '' });
+                                    notes: a.notes || '', isReserved: a.isReserved || false });
                                 log.push('✅ أُضيف مصروف: ' + e.description + ' بمبلغ ' + Utils.formatCurrency(e
-                                    .amount)); break; }
+                                    .amount) + (e.isReserved ? ' (محجوز)' : '')); break; }
                             case 'delete_expense': { Budget.deleteExpense(a.id);
                                 log.push('🗑️ تم حذف المصروف'); break; }
                             case 'set_salary': { const s = Storage.getSettings();
@@ -2975,6 +3047,8 @@ ${JSON.stringify(context, null, 2)}
                                 Budget.refreshUI();
                                 log.push('📊 تم تحديث ميزانية "' + a.category + '" إلى ' + Utils.formatCurrency(a
                                     .amount)); break; }
+                            case 'toggle_reserved': { Budget.toggleReserved(a.id);
+                                log.push('🔀 تم تبديل حالة الحجز للمصروف'); break; }
                             default: log.push('⚠️ إجراء غير معروف: ' + a.type);
                         }
                     } catch (e) { log.push('⚠️ تعذر تنفيذ إجراء: ' + e.message); }
@@ -3098,7 +3172,7 @@ ${JSON.stringify(context, null, 2)}
         }
 
         // ============================================================
-        // 11. UI (UPDATED to use FPE)
+        // 11. UI (UPDATED with Reserved support)
         // ============================================================
         const UI = {
             chatMessages: null,
@@ -3129,7 +3203,6 @@ ${JSON.stringify(context, null, 2)}
                 WorldTime.init().then(() => { this.setupDate();
                     this.renderDashboard(); });
 
-                // رسالة ترحيب مع السياق الجديد
                 setTimeout(() => {
                     const context = FPE.run(Budget.getMonthExpenses(), Storage.getSettings());
                     const health = context.metrics?.healthScore || 0;
@@ -3225,6 +3298,7 @@ ${JSON.stringify(context, null, 2)}
                 const closeBtn = Utils.id('closeDetailModal');
                 const closeBtn2 = Utils.id('closeDetailBtn');
                 const deleteBtn = Utils.id('deleteDetailBtn');
+                const toggleBtn = Utils.id('toggleReservedDetailBtn');
                 let currentExpenseId = null;
                 const closeModal = () => modal.classList.remove('open');
                 Utils.on(closeBtn, 'click', closeModal);
@@ -3236,6 +3310,13 @@ ${JSON.stringify(context, null, 2)}
                         UI.renderDashboard();
                         UI.renderExpenses();
                         UI.renderReports(); } });
+                Utils.on(toggleBtn, 'click', () => { if (!currentExpenseId) return; Budget.toggleReserved(
+                        currentExpenseId);
+                    const expense = Budget.getExpense(currentExpenseId);
+                    if (expense) UI.showExpenseDetail(expense);
+                    UI.renderDashboard();
+                    UI.renderExpenses();
+                    UI.renderReports(); });
             },
 
             showExpenseDetail(expense) {
@@ -3260,6 +3341,8 @@ ${JSON.stringify(context, null, 2)}
                     (expense.merchant || '—') +
                     '</span></div><div class="detail-item"><span class="label">طريقة الدفع</span><span class="value">' +
                     (expense.paymentMethod || '—') +
+                    '</span></div><div class="detail-item"><span class="label">محجوز؟</span><span class="value">' +
+                    (expense.isReserved ? '🔒 نعم' : '❌ لا') +
                     '</span></div><div class="detail-divider"></div><div class="detail-item" style="grid-column:1/-1;"><span class="label">الوصف</span><span class="value">' +
                     (expense.description || '—') +
                     '</span></div><div class="detail-item" style="grid-column:1/-1;"><span class="label">ملاحظات</span><span class="value">' +
@@ -3311,6 +3394,7 @@ ${JSON.stringify(context, null, 2)}
                     aiInput.value = '';
                     parseResult.innerHTML = '';
                     saveBtn.style.display = 'none';
+                    Utils.id('manualReserved').checked = false;
                 });
                 const closeModal = () => { modal.classList.remove('open');
                     parseResult.innerHTML = ''; };
@@ -3336,7 +3420,8 @@ ${JSON.stringify(context, null, 2)}
                             Utils.formatDate(result.date) +
                             '</span></div><div class="row"><span class="label">الوصف</span><span class="value">' +
                             (result.description || text) +
-                            '</span></div><div class="actions"><button class="btn-secondary" id="editParseBtn">تعديل</button><button class="btn-primary" id="saveParseBtn">حفظ</button></div></div>';
+                            '</span></div><div class="row"><span class="label">محجوز</span><span class="value"><input type="checkbox" id="parseReserved" ' +
+                            (result.isReserved ? 'checked' : '') + ' /></span></div><div class="actions"><button class="btn-secondary" id="editParseBtn">تعديل</button><button class="btn-primary" id="saveParseBtn">حفظ</button></div></div>';
                         Utils.on(Utils.id('editParseBtn'), 'click', () => {
                             const tab = Utils.qs('.method-tab[data-method="manual"]');
                             tab.click();
@@ -3345,10 +3430,12 @@ ${JSON.stringify(context, null, 2)}
                             Utils.id('manualCategory').value = result.category || 'أخرى';
                             Utils.id('manualDate').value = result.date || Utils.today();
                             Utils.id('manualMerchant').value = result.merchant || '';
+                            Utils.id('manualReserved').checked = result.isReserved || false;
                             saveBtn.style.display = 'inline-flex';
                             parseResult.innerHTML = '';
                         });
                         Utils.on(Utils.id('saveParseBtn'), 'click', () => {
+                            const reserved = Utils.id('parseReserved').checked;
                             const expenseData = {
                                 amount: result.amount,
                                 description: result.description || text,
@@ -3357,7 +3444,8 @@ ${JSON.stringify(context, null, 2)}
                                 merchant: result.merchant || '',
                                 subCategory: '',
                                 paymentMethod: '',
-                                notes: ''
+                                notes: '',
+                                isReserved: reserved
                             };
                             Budget.addExpense(expenseData);
                             closeModal();
@@ -3379,7 +3467,7 @@ ${JSON.stringify(context, null, 2)}
                             'manualSubCategory').value || '', date: Utils.id('manualDate').value || Utils
                             .today(), paymentMethod: Utils.id('manualPaymentMethod').value || '',
                         merchant: Utils.id('manualMerchant').value || '', notes: Utils.id('manualNotes')
-                            .value || '' };
+                            .value || '', isReserved: Utils.id('manualReserved').checked };
                     Budget.addExpense(data);
                     closeModal();
                     this.renderDashboard();
@@ -3714,8 +3802,6 @@ ${JSON.stringify(context, null, 2)}
                         const expenses = Budget.getExpenses();
                         const settings = Storage.getSettings();
                         const monthExp = Budget.getMonthExpenses();
-
-                        // بناء السياق باستخدام FPE
                         const context = FPE.run(monthExp, settings);
 
                         const rawResponse = await Gemini.thinkAndDecide(text, context);
@@ -3778,6 +3864,8 @@ ${JSON.stringify(context, null, 2)}
                             0), cls: 'accent' },
                     { icon: 'fa-arrow-down', label: 'المصروفات', value: Utils.formatCurrency(context.rawSummary
                             ?.totalExpenses || 0), cls: 'negative' },
+                    { icon: 'fa-lock', label: 'المحجوز', value: Utils.formatCurrency(m.reservedMoney || 0),
+                        cls: 'accent' },
                     { icon: 'fa-heartbeat', label: 'الصحة المالية', value: health + '/100',
                         cls: health >= 70 ? 'positive' : health >= 50 ? 'accent' : 'negative' },
                     { icon: 'fa-calendar-day', label: 'ميزانية اليوم', value: Utils.formatCurrency(m
@@ -3801,7 +3889,7 @@ ${JSON.stringify(context, null, 2)}
                     '</div><div class="card-value">' + c.value + '</div></div>'
                 ).join('');
 
-                // الملخص
+                // Summary
                 const catMap = Budget.getByCategory(monthExp);
                 const catEntries = Object.entries(catMap).sort((a, b) => b[1] - a[1]).slice(0, 5);
                 summaryContainer.innerHTML =
@@ -3815,7 +3903,7 @@ ${JSON.stringify(context, null, 2)}
                     '</div></div><div class="summary-item glass"><div class="label">نسبة الادخار</div><div class="value">' +
                     (m.savingsRate || 0) + '%</div></div>';
 
-                // البطاقات الإضافية (السفر والمؤقت)
+                // Extra cards
                 const extraContainer = Utils.id('dashboardExtraCards');
                 if (extraContainer) {
                     const extraCards = [];
@@ -3951,6 +4039,7 @@ ${JSON.stringify(context, null, 2)}
                     list.innerHTML = expenses.map(e =>
                         '<div class="expense-item glass" data-id="' + e.id +
                         '"><div class="expense-info"><div class="desc">' + e.description +
+                        (e.isReserved ? ' <span class="reserved-badge">🔒 محجوز</span>' : '') +
                         '</div><div class="meta"><span><i class="fas fa-tag"></i> ' + e.category +
                         '</span>' + (e.merchant ? '<span><i class="fas fa-store"></i> ' + e.merchant +
                             '</span>' : '') + '<span><i class="fas fa-calendar"></i> ' + Utils.formatDate(e
@@ -4019,7 +4108,7 @@ ${JSON.stringify(context, null, 2)}
                 Charts.drawBar(monthCtx, monthLabels, monthData, colors, 'الشهر');
                 const remCtx = Utils.id('remainingChart').getContext('2d');
                 const settings = Storage.getSettings();
-                const remaining = Budget.getRemaining(monthExp);
+                const remaining = Budget.getRemaining(monthExp, settings);
                 const used = Budget.getTotal(monthExp);
                 const salary = parseFloat(settings.salary) || 0;
                 Charts.drawBar(remCtx, ['المتبقي', 'المصروف', 'الراتب'], [Math.max(remaining, 0), used, salary], [
