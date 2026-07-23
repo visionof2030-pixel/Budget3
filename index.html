@@ -14,7 +14,7 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" />
 
     <style>
-        /* ===== styles (same as original, keep unchanged) ===== */
+        /* ===== جميع الأنماط (نفس الأصل، لم تتغير) ===== */
         :root {
             --bg-primary: #EFF5F9;
             --bg-secondary: #FFFFFF;
@@ -1702,7 +1702,7 @@
         </main>
     </div>
 
-    <!-- ===== MODALS ===== -->
+    <!-- ===== MODALS (نفس الأصل) ===== -->
     <div id="expenseModal" class="modal">
         <div class="modal-content glass">
             <div class="modal-header"><h2>إضافة مصروف</h2><button class="modal-close" id="closeExpenseModal">&times;</button></div>
@@ -1813,7 +1813,7 @@
 
     <script>
         // ============================================================
-        // 1. UTILS (same)
+        // 1. UTILS (نفس الأصل)
         // ============================================================
         const Utils = {
             id: (el) => document.getElementById(el),
@@ -1856,7 +1856,7 @@
         };
 
         // ============================================================
-        // 2. WORLDTIME (same)
+        // 2. WORLDTIME (نفس الأصل)
         // ============================================================
         const WorldTime = {
             offsetMs: 0,
@@ -1893,7 +1893,7 @@
         };
 
         // ============================================================
-        // 3. STORAGE (same)
+        // 3. STORAGE (نفس الأصل)
         // ============================================================
         const Storage = {
             get(key, def) { try { const val = localStorage.getItem('ai_budget_' + key); return val ? JSON.parse(val) :
@@ -1929,7 +1929,7 @@
         };
 
         // ============================================================
-        // 4. BUDGET (core CRUD)
+        // 4. BUDGET (نفس الأصل)
         // ============================================================
         const Budget = {
             getExpenses() { return Storage.getExpenses(); },
@@ -2048,7 +2048,7 @@
         };
 
         // ============================================================
-        // 5. EXPENSE PARSER (same)
+        // 5. EXPENSE PARSER (نفس الأصل)
         // ============================================================
         const ExpenseParser = {
             parse(text) {
@@ -2175,21 +2175,15 @@
         };
 
         // ============================================================
-        // 6. FINANCIAL PLANNING ENGINE (FPE) - NEW
+        // 6. FINANCIAL PLANNING ENGINE (FPE) - مع التعديلات المطلوبة
         // ============================================================
-        // مبادئ: لا تعتمد على قيم مطلقة، تعتمد على النسب والمؤشرات.
-        // كل محرك مستقل، قابل للتوسع.
 
         class IncomeAnalyzer {
             static analyze(expenses, settings) {
-                // الدخل الثابت (الراتب الشهري)
                 const salary = parseFloat(settings.salary) || 0;
-                // الدخل المتغير يمكن إضافته لاحقاً عبر معاملات خاصة
-                // حالياً نعتبر الراتب هو المصدر الوحيد
                 const recurringIncome = salary;
                 const variableIncome = 0;
                 const totalIncome = recurringIncome + variableIncome;
-                // استقرار الدخل: بناءً على وجود راتب ثابت
                 const stability = salary > 0 ? 'high' : 'low';
                 return {
                     totalIncome,
@@ -2207,9 +2201,21 @@
         class CommitmentAnalyzer {
             static analyze(expenses, settings) {
                 const monthExp = expenses || Budget.getMonthExpenses();
-                const total = Budget.getTotal(monthExp);
                 const catMap = Budget.getByCategory(monthExp);
+                // نجلب ميزانيات التصنيفات من الإعدادات
+                const budgets = settings.categoryBudgets || {};
 
+                // نقوم بدمج المصروفات الفعلية مع الميزانيات (نأخذ القيمة الأكبر)
+                // بهذه الطريقة نضمن أن الالتزامات تعكس الحد الأقصى المخطط له
+                const mergedCatMap = { ...catMap };
+                for (const [cat, budget] of Object.entries(budgets)) {
+                    if (budget > 0) {
+                        const actual = mergedCatMap[cat] || 0;
+                        mergedCatMap[cat] = Math.max(actual, budget);
+                    }
+                }
+
+                // الآن نحسب الالتزامات بناءً على mergedCatMap
                 let fixed = 0,
                     bills = 0,
                     variable = 0,
@@ -2220,14 +2226,13 @@
                     subscriptions = 0,
                     other = 0;
 
-                // تصنيف ديناميكي حسب التصنيفات
                 const fixedKeywords = ['إيجار', 'أقساط', 'قسط'];
                 const billsKeywords = ['كهرباء', 'ماء', 'إنترنت', 'فواتير'];
                 const savingsKeywords = ['ادخار', 'استثمار'];
                 const loansKeywords = ['قرض', 'دين'];
                 const subscriptionsKeywords = ['اشتراك'];
 
-                for (const [cat, amount] of Object.entries(catMap)) {
+                for (const [cat, amount] of Object.entries(mergedCatMap)) {
                     const catLower = cat.toLowerCase();
                     if (fixedKeywords.some(k => catLower.includes(k))) fixed += amount;
                     else if (billsKeywords.some(k => catLower.includes(k))) bills += amount;
@@ -2236,26 +2241,23 @@
                     else if (subscriptionsKeywords.some(k => catLower.includes(k))) subscriptions += amount;
                     else if (catLower.includes('استثمار')) investments += amount;
                     else if (catLower.includes('دين')) debt += amount;
-                    else variable += amount; // الباقي متغير
+                    else variable += amount;
                 }
 
-                // إعادة توزيع: لو مافيه تصنيفات محددة، نعتبر كل المصروفات متغيرة
-                if (fixed + bills + savings + investments + loans + debt + subscriptions === 0 && variable === 0) {
-                    variable = total;
-                }
-
+                const totalCommitments = fixed + bills + variable + savings + investments + loans + debt + subscriptions +
+                    other;
                 const weights = {
-                    fixedRatio: total > 0 ? (fixed / total) * 100 : 0,
-                    billsRatio: total > 0 ? (bills / total) * 100 : 0,
-                    variableRatio: total > 0 ? (variable / total) * 100 : 0,
-                    savingsRatio: total > 0 ? (savings / total) * 100 : 0,
-                    debtRatio: total > 0 ? ((loans + debt) / total) * 100 : 0,
+                    fixedRatio: totalCommitments > 0 ? (fixed / totalCommitments) * 100 : 0,
+                    billsRatio: totalCommitments > 0 ? (bills / totalCommitments) * 100 : 0,
+                    variableRatio: totalCommitments > 0 ? (variable / totalCommitments) * 100 : 0,
+                    savingsRatio: totalCommitments > 0 ? (savings / totalCommitments) * 100 : 0,
+                    debtRatio: totalCommitments > 0 ? ((loans + debt) / totalCommitments) * 100 : 0,
                 };
 
                 return {
                     commitments: { fixed, bills, variable, savings, investments, loans, debt, subscriptions, other },
                     weights,
-                    totalCommitments: total
+                    totalCommitments
                 };
             }
         }
@@ -2265,12 +2267,11 @@
                 const totalIncome = incomeResult.totalIncome || 0;
                 const totalExpenses = commitmentResult.totalCommitments || 0;
                 const remaining = totalIncome - totalExpenses;
-                const salary = totalIncome; // الراتب هو الدخل
+                const salary = totalIncome;
                 const savingsGoal = parseFloat(settings.savingsGoal) || 0;
                 const monthExp = expenses || Budget.getMonthExpenses();
                 const daysInMonth = new Date(WorldTime.now().getFullYear(), WorldTime.now().getMonth() + 1, 0).getDate();
 
-                // النسب الأساسية
                 const savingsRate = totalIncome > 0 ? Math.max(0, (remaining / totalIncome) * 100) : 0;
                 const debtRatio = commitmentResult.weights.debtRatio || 0;
                 const essentialRatio = (commitmentResult.weights.fixedRatio || 0) + (commitmentResult.weights.billsRatio ||
@@ -2287,38 +2288,27 @@
                     .commitments.bills || 0) - (commitmentResult.commitments.loans || 0) - (commitmentResult.commitments
                     .debt || 0);
 
-                // هامش الطوارئ (بافتراض أن الأساسيات = fixed + bills)
                 const essentials = (commitmentResult.commitments.fixed || 0) + (commitmentResult.commitments.bills || 0);
                 const emergencyMargin = essentials > 0 ? (remaining / essentials) : 0;
-
-                // المرونة المالية = الدخل المتاح / الدخل
                 const flexibilityScore = totalIncome > 0 ? Math.min(100, (disposableIncome / totalIncome) * 100) : 0;
 
-                // توزيع المصروفات
                 const catMap = Budget.getByCategory(monthExp);
                 const expenseDistribution = Object.entries(catMap).map(([cat, amt]) => ({ category: cat, amount: amt,
                     percent: totalExpenses > 0 ? (amt / totalExpenses) * 100 : 0 }));
 
-                // استخدام الميزانيات
                 const catBudgets = settings.categoryBudgets || {};
                 const budgetUtilization = Object.entries(catBudgets).map(([cat, budget]) => {
                     const spent = catMap[cat] || 0;
                     return { category: cat, budget, spent, percent: budget > 0 ? (spent / budget) * 100 : 0 };
                 });
 
-                // التقدم نحو الهدف
                 const goalProgress = savingsGoal > 0 ? Math.min(100, (remaining / savingsGoal) * 100) : 0;
-
-                // المتوسطات
                 const daysPassed = new Date(WorldTime.now().getDate());
                 const avgDaily = daysPassed > 0 ? totalExpenses / daysPassed : 0;
                 const avgWeekly = avgDaily * 7;
-
-                // التوقع البسيط
                 const projectedEnd = totalExpenses + (avgDaily * (daysInMonth - daysPassed));
                 const expectedSavings = totalIncome - projectedEnd;
 
-                // درجة الضغط المالي (عكسي للصحة)
                 const stressComponents = [
                     (savingsRate < 10) ? 1 : 0,
                     (debtRatio > 30) ? 1 : 0,
@@ -2328,13 +2318,11 @@
                 const stressSum = stressComponents.reduce((a, b) => a + b, 0);
                 const financialStressIndex = Math.min(100, (stressSum / 4) * 100);
 
-                // درجة الصحة المالية (0-100)
                 const healthScore = Math.max(0, Math.min(100,
                     40 + (savingsRate * 0.3) + (flexibilityScore * 0.2) + (goalProgress * 0.1) - (debtRatio * 0.2) - (
                         financialStressIndex * 0.1)
                 ));
 
-                // مستوى المخاطرة
                 let riskLevel = 'low';
                 if (healthScore < 30) riskLevel = 'very high';
                 else if (healthScore < 50) riskLevel = 'high';
@@ -2386,7 +2374,6 @@
                     if (hour >= 22 || hour < 6) night += e.amount;
                     else if (hour >= 6 && hour < 12) morning += e.amount;
                     if (day === 5 || day === 6) weekend += e.amount;
-                    // اندفاعي: كمالي + مبلغ كبير
                     if (e.purchaseType === 'Luxury' && e.amount > 100) impulse += e.amount;
                     if (e.merchant) merchants[e.merchant] = (merchants[e.merchant] || 0) + e.amount;
                     if (e.category) categories[e.category] = (categories[e.category] || 0) + e.amount;
@@ -2394,12 +2381,10 @@
 
                 const topMerchants = Object.entries(merchants).sort((a, b) => b[1] - a[1]).slice(0, 5);
                 const topCategories = Object.entries(categories).sort((a, b) => b[1] - a[1]).slice(0, 5);
-                const total = Budget.getTotal(monthExp);
                 const savingsRate = metrics.savingsRate || 0;
                 const lifestyleRatio = metrics.lifestyleRatio || 0;
                 const stress = metrics.financialStressIndex || 0;
 
-                // تصنيف الملف الشخصي
                 let profile = 'Balanced';
                 if (savingsRate > 30 && stress < 30) profile = 'AggressiveSaver';
                 else if (savingsRate > 15) profile = 'Saver';
@@ -2419,7 +2404,7 @@
                     impulseSpending: impulse,
                     topMerchants,
                     topCategories,
-                    recurringPatterns: [] // يمكن تحسينه لاحقاً
+                    recurringPatterns: []
                 };
             }
         }
@@ -2436,7 +2421,6 @@
                 const salary = parseFloat(settings.salary) || 0;
                 const projectedBalance = salary - projectedTotal;
 
-                // الفئات المعرضة للخطر
                 const catMap = Budget.getByCategory(monthExp);
                 const catBudgets = settings.categoryBudgets || {};
                 const atRisk = [];
@@ -2478,7 +2462,6 @@
                 const salary = parseFloat(settings.salary) || 0;
                 const currentSavings = metrics.remainingBudget || 0;
 
-                // سيناريو خفض المطاعم 20%
                 const restBudget = settings.categoryBudgets?.['المطاعم'] || 0;
                 if (restBudget > 0) {
                     const saving = restBudget * 0.2;
@@ -2496,7 +2479,6 @@
                     });
                 }
 
-                // سيناريو خفض الترفيه 30%
                 const entertainmentBudget = settings.categoryBudgets?.['الترفيه'] || 0;
                 if (entertainmentBudget > 0) {
                     const saving = entertainmentBudget * 0.3;
@@ -2514,7 +2496,6 @@
                     });
                 }
 
-                // سيناريو زيادة الادخار
                 if (metrics.savingsRate < 15) {
                     const targetSaving = salary * 0.15;
                     const additional = targetSaving - (salary * metrics.savingsRate / 100);
@@ -2550,7 +2531,6 @@
                     return { category: cat, priority };
                 });
 
-                // ترتيب التوصيات حسب الأولوية
                 const recPriorities = recommendations.map(rec => {
                     let priority = 'low';
                     if (rec.expectedSavings > 200) priority = 'high';
@@ -2581,7 +2561,6 @@
                     });
                 };
 
-                // إذا كان المتبقي سالباً
                 if (metrics.remainingBudget < 0) {
                     addRec('خفض الإنفاق', 'وقف الإنفاق غير الضروري',
                         'أنت تنفق أكثر من راتبك. أوقف جميع المشتريات الكمالية فوراً.',
@@ -2589,7 +2568,6 @@
                         'immediate');
                 }
 
-                // إذا كانت نسبة الادخار منخفضة
                 if (metrics.savingsRate < 10 && metrics.remainingBudget > 0) {
                     const targetSave = metrics.remainingBudget * 0.3;
                     addRec('الادخار', 'زيادة الادخار',
@@ -2598,7 +2576,6 @@
                         targetSave, 80, 'medium', 'short');
                 }
 
-                // تصنيفات مهددة
                 const atRisk = forecast.atRiskCategories || [];
                 atRisk.forEach(risk => {
                     if (risk.overshoot > 0) {
@@ -2609,7 +2586,6 @@
                     }
                 });
 
-                // سلوك اندفاعي
                 if (behavior.impulseSpending > metrics.averageDailySpending * 3) {
                     addRec('الإنفاق الاندفاعي', 'التحكم في المشتريات الاندفاعية',
                         `أنفقت ${Utils.formatCurrency(behavior.impulseSpending)} على مشتريات اندفاعية.`,
@@ -2617,7 +2593,6 @@
                         'short');
                 }
 
-                // إذا لم تكن هناك توصيات، نضيف توصية عامة
                 if (recs.length === 0) {
                     addRec('تحسين عام', 'استمرار الأداء الجيد',
                         'أداؤك المالي ممتاز. استمر في الحفاظ على هذا المستوى.',
@@ -2722,24 +2697,15 @@
         // ============================================================
         const FPE = {
             run(expenses, settings) {
-                // 1. Income
                 const income = IncomeAnalyzer.analyze(expenses, settings);
-                // 2. Commitment
                 const commitment = CommitmentAnalyzer.analyze(expenses, settings);
-                // 3. Metrics
                 const metrics = MetricsEngine.calculate(income, commitment, expenses, settings);
-                // 4. Behavior
                 const behavior = BehaviorAnalyzer.analyze(expenses, metrics);
-                // 5. Forecast
                 const forecast = ForecastEngine.forecast(expenses, metrics, settings);
-                // 6. Scenario
                 const scenario = ScenarioEngine.generate(metrics, forecast, settings);
-                // 7. Recommendation (يحتاج إلى الأولويات، لكن الأولويات تعتمد على التوصيات، لذا نمرر فارغاً مؤقتاً)
                 const recommendations = RecommendationEngine.generate(metrics, behavior, forecast, {});
-                // 8. Priority
                 const categories = Storage.getCategories();
                 const priorities = PriorityEngine.prioritize(categories, commitment, recommendations.recommendations);
-                // 9. Build Context
                 const context = FinancialContextBuilder.build(
                     income, commitment, metrics, behavior, forecast, scenario, recommendations, priorities
                 );
@@ -2748,7 +2714,7 @@
         };
 
         // ============================================================
-        // 8. GEMINI ADAPTER (UPDATED)
+        // 8. GEMINI ADAPTER (نفس الأصل، يستقبل السياق فقط)
         // ============================================================
         const Gemini = {
             getKeys() { return Storage.getGeminiKeys(); },
@@ -2804,11 +2770,8 @@
                 }
             },
 
-            // البرومبت الجديد: يعتمد فقط على السياق الجاهز
             async thinkAndDecide(query, context) {
-                // context هو FinancialContext الكامل
                 const contextStr = JSON.stringify(context, null, 2);
-
                 const prompt = `أنت مستشار مالي شخصي خبير. أنت هنا لشرح البيانات المالية، وتقديم نصائح، والإجابة عن الأسئلة.
 
 **قواعد صارمة:**
@@ -2902,7 +2865,6 @@ ${JSON.stringify(context, null, 2)}
 أجب باللغة العربية الفصحى.`;
 
                 try { return await this.sendRequest(prompt); } catch (e) {
-                    // رد احتياطي سريع
                     const remaining = context.metrics?.remainingBudget || 0;
                     const daily = context.metrics?.dailyBudget || 0;
                     if (question.includes('كم أستطيع أن أصرف اليوم')) {
@@ -2926,7 +2888,7 @@ ${JSON.stringify(context, null, 2)}
         };
 
         // ============================================================
-        // 9. COMMAND EXECUTOR (same)
+        // 9. COMMAND EXECUTOR (نفس الأصل)
         // ============================================================
         const Commands = {
             extract(text) {
@@ -2985,7 +2947,7 @@ ${JSON.stringify(context, null, 2)}
         };
 
         // ============================================================
-        // 10. CHARTS (same)
+        // 10. CHARTS (نفس الأصل)
         // ============================================================
         const Charts = {
             drawBar(ctx, labels, data, colors, label) {
@@ -3098,7 +3060,7 @@ ${JSON.stringify(context, null, 2)}
         }
 
         // ============================================================
-        // 11. UI (UPDATED to use FPE)
+        // 11. UI (نفس الأصل، يستخدم FPE)
         // ============================================================
         const UI = {
             chatMessages: null,
@@ -3129,7 +3091,6 @@ ${JSON.stringify(context, null, 2)}
                 WorldTime.init().then(() => { this.setupDate();
                     this.renderDashboard(); });
 
-                // رسالة ترحيب مع السياق الجديد
                 setTimeout(() => {
                     const context = FPE.run(Budget.getMonthExpenses(), Storage.getSettings());
                     const health = context.metrics?.healthScore || 0;
@@ -3714,8 +3675,6 @@ ${JSON.stringify(context, null, 2)}
                         const expenses = Budget.getExpenses();
                         const settings = Storage.getSettings();
                         const monthExp = Budget.getMonthExpenses();
-
-                        // بناء السياق باستخدام FPE
                         const context = FPE.run(monthExp, settings);
 
                         const rawResponse = await Gemini.thinkAndDecide(text, context);
@@ -3801,7 +3760,6 @@ ${JSON.stringify(context, null, 2)}
                     '</div><div class="card-value">' + c.value + '</div></div>'
                 ).join('');
 
-                // الملخص
                 const catMap = Budget.getByCategory(monthExp);
                 const catEntries = Object.entries(catMap).sort((a, b) => b[1] - a[1]).slice(0, 5);
                 summaryContainer.innerHTML =
@@ -3812,10 +3770,9 @@ ${JSON.stringify(context, null, 2)}
                     monthExp.length +
                     '</div></div><div class="summary-item glass"><div class="label">متوسط اليومي</div><div class="value">' +
                     Utils.formatCurrency(m.averageDailySpending || 0) +
-                    '</div></div><div class="summary-item glass"><div class="label">نسبة الادخار</div><div class="value">' +
-                    (m.savingsRate || 0) + '%</div></div>';
+                    '</div></div><div class="summary-item glass"><div class="label">نسبة الالتزام</div><div class="value">' +
+                    (m.commitmentRatio || 0) + '%</div></div>';
 
-                // البطاقات الإضافية (السفر والمؤقت)
                 const extraContainer = Utils.id('dashboardExtraCards');
                 if (extraContainer) {
                     const extraCards = [];
