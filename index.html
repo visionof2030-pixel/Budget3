@@ -2032,7 +2032,6 @@
                 <a href="#" class="nav-link" data-page="coach"><i class="fas fa-robot"></i><span>المدرب المالي</span></a>
                 <a href="#" class="nav-link" data-page="reports"><i class="fas fa-chart-pie"></i><span>التقارير</span></a>
                 <a href="#" class="nav-link" data-page="analytics"><i class="fas fa-robot"></i><span>التحليلات</span></a>
-                <!-- NEW: Income & Savings Page -->
                 <a href="#" class="nav-link" data-page="income"><i class="fas fa-coins"></i><span>الدخل والأهداف</span></a>
                 <a href="#" class="nav-link" data-page="settings"><i class="fas fa-cog"></i><span>الإعدادات</span></a>
                 <a href="#" class="nav-link" data-page="travel"><i class="fas fa-plane"></i><span>ميزانية السفر</span></a>
@@ -2129,13 +2128,11 @@
                     </div>
                 </section>
 
-                <!-- NEW: Income & Savings Page -->
                 <section id="page-income" class="page">
                     <div class="settings-container glass" style="max-width:100%;">
                         <h2><i class="fas fa-coins"></i> الدخل والأهداف الادخارية</h2>
                         <p class="form-hint">حدد الراتب الشهري وموعد صرفه، وكذلك هدف الادخار الشهري.</p>
 
-                        <!-- Salary & Savings Section -->
                         <div class="income-section">
                             <h3><i class="fas fa-money-bill-wave"></i> الراتب الشهري</h3>
                             <form id="incomeForm" class="settings-form">
@@ -2151,14 +2148,11 @@
                             </form>
                         </div>
 
-                        <!-- Salary Date Selection -->
                         <div class="income-section">
                             <h3><i class="fas fa-calendar-alt"></i> مواعيد صرف الرواتب والدعم</h3>
                             <p class="form-hint">اختر نوع المعاش أو الدعم لتحديد موعد الصرف تلقائياً، أو أدخل التاريخ يدوياً.</p>
 
-                            <div class="salary-preset-grid" id="salaryPresetGrid">
-                                <!-- Will be populated by JS -->
-                            </div>
+                            <div class="salary-preset-grid" id="salaryPresetGrid"></div>
 
                             <div class="salary-manual-input">
                                 <div class="form-group">
@@ -2181,7 +2175,6 @@
                     <div class="settings-container glass">
                         <h2>الإعدادات العامة</h2>
                         <form id="settingsForm" class="settings-form">
-                            <!-- Removed salary and savings goal fields -->
                             <div class="form-group"><label for="settingsSalaryDate">تاريخ نزول الراتب (مرجع سابق)</label><input type="date" id="settingsSalaryDate" class="form-input" /></div>
                             <button type="submit" class="btn-primary">حفظ الإعدادات</button>
                         </form>
@@ -3417,7 +3410,7 @@
         };
 
         // ============================================================
-        // 6. EXPENSE PARSER (unchanged)
+        // 6. EXPENSE PARSER - ENHANCED SMART CLASSIFIER
         // ============================================================
         const ExpenseParser = {
             parse(text) {
@@ -3479,29 +3472,68 @@
                                 .today() });
                     }
                 }
+                // ===== ENHANCED SMART CLASSIFIER =====
                 const categories = Utils.defaultCategories();
                 result.transactions = result.transactions.map(t => {
-                    let category = 'أخرى';
                     const desc = (t.description || '').toLowerCase();
-                    for (const cat of categories) {
-                        if (desc.includes(cat) || t.merchant?.toLowerCase().includes(cat)) { category = cat; break; }
+                    const merchant = (t.merchant || '').toLowerCase();
+                    const fullText = desc + ' ' + merchant;
+
+                    // ---- NEW: Detailed pattern matching ----
+                    // Car & Vehicle
+                    if (/(زيت مكينة|زيت محرك|مكينة|سيارة|بنزين|بترول|ديزل|زيت قير|فرامل|بطارية|كفرات|إطارات|صيانة سيارة|تغيير زيت|فحص دوري|تشحيم|ورشة|ميكانيكي|كهربائي سيارة|تلميع سيارة|غسيل سيارة|موتر|جمس|لكزس|تويوتا|نيسان|هوندا|مرسيدس|بي ام دبليو|فورد|شفروليه|هيونداي|كيا|مازدا)/i.test(fullText)) {
+                        return { ...t, category: 'السيارة' };
                     }
-                    if (category === 'أخرى') {
-                        if (desc.includes('قهوة') || desc.includes('كافيه')) category = 'المقاهي';
-                        else if (desc.includes('مطعم') || desc.includes('وجبة')) category = 'المطاعم';
-                        else if (desc.includes('بنزين') || desc.includes('بترول')) category = 'البنزين';
-                        else if (desc.includes('كهرباء')) category = 'الكهرباء';
-                        else if (desc.includes('ماء')) category = 'الماء';
-                        else if (desc.includes('نت') || desc.includes('إنترنت')) category = 'الإنترنت';
-                        else if (desc.includes('إيجار')) category = 'الإيجار';
-                        else if (desc.includes('قسط')) category = 'الأقساط';
-                        else if (desc.includes('صحي') || desc.includes('دواء')) category = 'الصحة';
-                        else if (desc.includes('ترفيه')) category = 'الترفيه';
-                        else if (desc.includes('تسوق')) category = 'التسوق';
-                        else if (desc.includes('تعليم') || desc.includes('دورة')) category = 'التعليم';
-                        else if (desc.includes('سيارة') || desc.includes('صيانة')) category = 'السيارة';
+                    // Restaurants & Food Outlets
+                    if (/(مطعم|وجبة|وجبات|فطور|عشاء|غداء|سناك|برجر|شاورما|بيتزا|باستا|مشاوي|مندي|كبسة|برياني|مقلوبة|صينية|مأكولات|أكل|اكل|طعام|ماكدونالدز|هرفي|كودو|البرجر|الشاورما|بيتزا هت|دومينوز|كنتاكي|كنتاكي|هارديز|ون تو ثري|تاون|جلسة|كافيه|مقهى|كوفي|قهوة|شاي|نسكافيه|كابتشينو|لاتيه|موكا|اسبريسو|قهوة سعودية|شاهي|نعناع)/i.test(fullText)) {
+                        return { ...t, category: 'المطاعم' };
                     }
-                    return { ...t, category };
+                    // Groceries & Supermarkets
+                    if (/(بقالة|سوبرماركت|تموين|مواد غذائية|خضار|فواكه|لحم|دجاج|سمك|بيض|حليب|جبن|زبادي|خبز|رز|سكر|زيت|طحين|شعيرية|مكرونة|بقوليات|توابل|بهارات|معلبات|عصائر|مياه|تمر|عسل|بنده|كارفور|تميم|دانوب|أسواق|نوري|المزرعة|العثيم|الدانوب|السدحان|أسواق المزرعة|لولو|هيبر|سبينس|السويلم)/i.test(fullText)) {
+                        return { ...t, category: 'المواد الغذائية' };
+                    }
+                    // Beverages & Drinks (if not caught by food)
+                    if (/(بيبسي|كوكاكولا|سفن اب|مشروب غازي|مشروب|عصير|شاي|قهوة|نسكافيه|كابتشينو|موكا|لاتيه|اسبريسو|عصير برتقال|عصير تفاح|مياه غازية|مياه معدنية|ريد بول|ستاربكس|دانكن|بارنيز|كافيه|مقهى)/i.test(fullText)) {
+                        return { ...t, category: 'المواد الغذائية' };
+                    }
+                    // Bills & Utilities
+                    if (/(كهرباء|ماء|إنترنت|جوال|فواتير|فاتورة|سداد|خدمات|صيانة|نت|واي فاي|آيس|موبايلي|زين|سوا|جوي|سكاي|ألياف|بصري|كهرب|مياه|الصرف الصحي)/i.test(fullText)) {
+                        return { ...t, category: 'الكهرباء' };
+                    }
+                    // Rent & Housing
+                    if (/(إيجار|سكن|شقة|منزل|فيلا|دفعة|عقار|مكتب|محل|سكني|استئجار|الإيجار|البيت|المنزل)/i.test(fullText)) {
+                        return { ...t, category: 'الإيجار' };
+                    }
+                    // Education
+                    if (/(تعليم|مدرسة|جامعة|كلية|دورة|منصة|تدريب|كتاب|قرطاسية|مكتبة|معلم|منهج|دراسة|اختبار|رسوم دراسية|رسوم جامعة|أكاديمية|معرفة|تعلم|مقرر)/i.test(fullText)) {
+                        return { ...t, category: 'التعليم' };
+                    }
+                    // Health
+                    if (/(صحي|صحة|مستشفى|عيادة|طبيب|دواء|صيدلية|كشف|علاج|أسنان|عيون|جراحة|فحص|مختبر|أشعة|تطعيم|لقاح|إسعاف|طوارئ|مستوصف|مركز صحي|رعاية|تأمين صحي)/i.test(fullText)) {
+                        return { ...t, category: 'الصحة' };
+                    }
+                    // Entertainment
+                    if (/(ترفيه|سينما|مسرح|حفلة|فعالية|مهرجان|مدينة ألعاب|بولينج|بلياردو|ألعاب|فيديو|بلاي ستيشن|نتفلكس|شاهد|أمازون برايم|يوتيوب بريميوم|سبوتيفاي|أنغامي|تكت|تذاكر|فعاليات|مؤتمر|معرض|متعة|تسلية)/i.test(fullText)) {
+                        return { ...t, category: 'الترفيه' };
+                    }
+                    // Shopping (clothing, electronics, etc.)
+                    if (/(تسوق|ملابس|أحذية|شنط|مكياج|عطور|إلكترونيات|جوال|لابتوب|تابلت|سماعة|ساعة|هدايا|مجوهرات|إكسسوارات|أثاث|منزل|مطبخ|حمام|ديكور|تحف|سجاد|ستائر|أجهزة|كهربائيات|تلفزيون|ثلاجة|غسالة|مكيف|فرن|ميكروويف|خلاط|مفرمة|غسالة صحون|نشافة|مكنسة)/i.test(fullText)) {
+                        return { ...t, category: 'التسوق' };
+                    }
+                    // Installments & Loans
+                    if (/(قسط|قرض|دين|سداد|تمويل|مرابحة|تقسيط|سيارة|عقار|رهن|ضمان|كفالة|بنك|مصرف|أقساط|التزام|التزامات)/i.test(fullText)) {
+                        return { ...t, category: 'الأقساط' };
+                    }
+                    // Fuel (if not caught by car)
+                    if (/(بنزين|بترول|ديزل|وقود|محطة وقود|بترومين|الدريس|الوقود|تعبئة|تموين)/i.test(fullText)) {
+                        return { ...t, category: 'البنزين' };
+                    }
+                    // Coffee shops (if not caught by restaurants)
+                    if (/(كافيه|مقهى|كوفي|قهوة|شاي|نسكافيه|كابتشينو|لاتيه|موكا|اسبريسو|ستاربكس|دانكن|بارنيز|كافيه|مقهى)/i.test(fullText)) {
+                        return { ...t, category: 'المقاهي' };
+                    }
+                    // Default fallback
+                    return { ...t, category: 'أخرى' };
                 });
                 return result;
             },
@@ -4674,7 +4706,7 @@
                 this.setupBudgetItems();
                 this.setupResetApp();
                 this.setupCoach();
-                this.setupIncomePage(); // NEW
+                this.setupIncomePage();
                 this.renderAll();
                 WorldTime.init().then(() => { this.setupDate();
                     this.renderAll(); });
@@ -4727,7 +4759,7 @@
                 this.renderTravel();
                 this.renderTemp();
                 this.renderCoach(ctx);
-                this.renderIncomePage(); // NEW
+                this.renderIncomePage();
                 this.updateCategoryFilters();
             },
 
